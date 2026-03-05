@@ -63,6 +63,7 @@ class Train():
         
 
         self.date = datetime.now().strftime("%Y_%m_%d") # for files
+        self.terrain_sequence = ['floor', 'carpet', 'cardboard', 'artificial_grass']
         
         
 
@@ -75,7 +76,7 @@ class Train():
         It is possible to have different numbers of iterations for initial
         designs and the design optimization process.
         """
-        self.stateList = [[] for i in range(0,18)] #was 17
+        self.stateList = []
         self.actionList = [[] for i in range(0,7)] #was 6
         self.designList = [[] for i in range(0,7)]
         self.timestepRewards = []
@@ -133,7 +134,7 @@ class Train():
 
             """
 
-            self.stateList = [[] for i in range(0,18)] #was 17
+            self.stateList = []
             self.actionList = [[] for i in range(0,7)] # was 6
             self.timestepRewards = []
             self.cumulativeRewards = []
@@ -141,7 +142,12 @@ class Train():
             self.timesteps = []
 
             # reset environment
+            terrain = self.terrain_sequence[self.episode_counter % len(self.terrain_sequence)]
+            SnakeEnv.set_current_terrain(terrain)
+            print(f"CURRENT TERRAIN: {terrain}. Place robot on this terrain before continuing reset.")
             state, info = self.env.reset()
+            state_dim = len(state)
+            self.stateList = [[] for _ in range(state_dim)]
             steps = 0
             episodeRewards = 0
             episodeContRewards = []
@@ -190,7 +196,7 @@ class Train():
                 self.timestepRewards.append(reward)
                 self.cumulativeRewards.append(episodeRewards)
                 self.epList.append(self.currEp) # to make note of what episode we are on
-                for i in range(0,18): #was 17
+                for i in range(len(state)): #was 17
                     self.stateList[i].append(state[i])
 
 
@@ -250,7 +256,7 @@ class Train():
          
             self.env.reset()
             
-            self.optimized_params = [2.653, 1.280, 2.385, 3.191, 1.485, 2.175, .542] # can set initial parameters yourself, 6 motors, but needs to be 7
+            self.optimized_params = [0, 0, 0]
             # or can: self.optimized_params = SnakeEnv.get_random_design()
           
 
@@ -522,7 +528,7 @@ class Train():
 
         for i in range(7): #was 6
             self.actionList[i] = self.actionList[i][:min_len]
-        for i in range(18): #was 17
+        for i in range(len(self.stateList)):
             self.stateList[i] = self.stateList[i][:min_len]
         rewardDF = pd.DataFrame()
 
@@ -532,6 +538,11 @@ class Train():
         rewardDF['Y_Position']= yPositionList # added this, need to see if it works
         rewardDF['Rewards'] = self.timestepRewards
         rewardDF['Cumulative_Rewards'] = self.cumulativeRewards
+        rewardDF['Terrain'] = [SnakeEnv.get_current_terrain()] * len(self.timesteps)
+        design = SnakeEnv.get_current_design()
+        rewardDF['Scale_Head'] = [int(design[0])] * len(self.timesteps)
+        rewardDF['Scale_Body'] = [int(design[1])] * len(self.timesteps)
+        rewardDF['Scale_Tail'] = [int(design[2])] * len(self.timesteps)
 
         # log state variablesmotor_and_coadaptation/CoadaptationCode/train_coadapt.py
         rewardDF['Motor1_Action'] = self.actionList[0]
@@ -555,13 +566,12 @@ class Train():
         rewardDF['Motor4_Pos'] = self.stateList[7]
         rewardDF['Motor5_Pos'] =  self.stateList[8]
         rewardDF['Motor6_Pos'] =  self.stateList[9]
-        rewardDF['Plate1'] =  self.stateList[10]
-        rewardDF['Plate2'] =  self.stateList[11]
-        rewardDF['Plate3'] =  self.stateList[12]
-        rewardDF['Plate4'] =  self.stateList[13]
-        rewardDF['Plate5'] =  self.stateList[14]
-        rewardDF['Plate6'] =  self.stateList[15]
-        rewardDF['Plate7'] =  self.stateList[16]
+        if len(self.stateList) > 10:
+            rewardDF['Design_1'] = self.stateList[10]
+        if len(self.stateList) > 11:
+            rewardDF['Design_2'] = self.stateList[11]
+        if len(self.stateList) > 12:
+            rewardDF['Design_3'] = self.stateList[12]
 
         current_episode = self.episode_counter
         # read existing file if it exists and is valid

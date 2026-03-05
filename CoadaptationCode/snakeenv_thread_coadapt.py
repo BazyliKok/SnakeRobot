@@ -48,27 +48,34 @@ class SnakeEnv(gymnasium.Env):
 
     # setting up design framework
     #TODO: make it 1.80 for 1 segment
-    current_design = [1.80] # put initial length in here, 6 links right now!
+    # Design vector encodes the scale type used on [head, body, tail].
+    # 0 = TPU with spikes, 1 = TPU without spikes,
+    # 2 = PLA with spikes, 3 = PLA without spikes.
+    current_design = [0, 0, 0]
+    current_terrain = 'floor'
+    scale_types = {
+        0: 'TPU_SPIKES',
+        1: 'TPU_NO_SPIKES',
+        2: 'PLA_SPIKES',
+        3: 'PLA_NO_SPIKES',
+    }
+    terrains = ['floor', 'carpet', 'cardboard', 'artificial_grass']
 
     #design_parameter_bounds = [(.45, 3.60)] # the bounds of how small and large a variable can be 
 
-    design_parameter_bounds = [(0,70),(2,7),(0,100),(0,1)] # angle of attack 0 to 70 deg, width attack 2mm to 7mm, infill 0% to 100%, material pla or tpu 
+    # Discrete bounds for [head, body, tail] scale type ids.
+    design_parameter_bounds = [(0,3), (0,3), (0,3)]
 
-    # init_design_parameters = [
-    #         [1.0] * 6
-    #         [.5, .5, .5, .5, .5, .5]
-    #         [.5, 1, .5, 1, .5, 1]
-    #         [.75, .5, .75, .5, 1, 1]
-    #     ] # NOTE: Change these depending on the design I am going to use
-
-    # init_design_parameters = [
-    #     [1.80] * 8,
-    #     [.60] * 8,
-    #     [2.70] * 8,
-    #     [1.80, .60, 2.70, 1.80, .60, 2.70, 1.80,.60,],
-    #     [2.653, 1.280, 2.385, 3.191, 1.485, 2.175, .542],
-
-    # ] # NOTE: Change these depending on the design I am going to use
+    # Initial symmetric and asymmetric scale-distribution seeds.
+    init_design_parameters = [
+        [0, 0, 0],  # symmetric: TPU spikes everywhere
+        [1, 1, 1],  # symmetric: TPU no spikes
+        [2, 2, 2],  # symmetric: PLA spikes
+        [3, 3, 3],  # symmetric: PLA no spikes
+        [0, 1, 2],  # asymmetric
+        [2, 0, 3],  # asymmetric
+        [3, 1, 0],  # asymmetric
+    ]
 
     config_numpy = np.array(current_design)
     
@@ -84,7 +91,15 @@ class SnakeEnv(gymnasium.Env):
         
        
 
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(10+9,), dtype= 'float32') # data type is float32
+        base_obs_dim = 11
+        design_dim = len(SnakeEnv.config_numpy)
+        obs_dim = base_obs_dim + design_dim
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(obs_dim,),
+            dtype='float32'
+        )
         
         self.action_space = spaces.Box(low=self.motorMin, high=self.motorMax, shape=(7,), dtype='float32') # continuous action space
         #self.action_space = spaces.Box(low=self.motorMin, high=self.motorMax, shape=(18,), dtype='float32')
@@ -143,7 +158,10 @@ class SnakeEnv(gymnasium.Env):
         nextObs[1] = nextObs[1] - self._prev_obs[1]
         nextObs[2] = nextObs[2] - self._prev_obs[2]
 
-        while (nextObs[0]- self._prev_obs[0]) == 0. and nextObs[1] == 0.:
+        max_wait = 50
+        wait_i = 0
+        eps = 1e-3
+        while abs(nextObs[0] - self._prev_obs[0]) < eps and abs(nextObs[1]) < eps and wait_i < max_wait:
             nextObs = self._get_obs()
             print(nextObs)
             tmp_pos = copy.deepcopy(nextObs)
@@ -152,6 +170,7 @@ class SnakeEnv(gymnasium.Env):
             nextObs[2] = nextObs[2] - self._prev_obs[2]
             print("im here")
             print(nextObs[0], nextObs[1])
+            wait_i += 1
 
         self._prev_obs = tmp_pos
 
@@ -191,7 +210,7 @@ class SnakeEnv(gymnasium.Env):
         nextObs = np.append(nextObs, SnakeEnv.config_numpy)
         print(f"Observation: {nextObs}")
 
-        return np.array(nextObs), reward, terminated, truncated, info
+        return np.array(nextObs, dtype=np.float32), reward, terminated, truncated, info
     
     def reset(self, seed=None, options=None):
         # returns: observation of the initial state
@@ -251,7 +270,7 @@ class SnakeEnv(gymnasium.Env):
         observationfull = np.append(observation, SnakeEnv.config_numpy)
 
         print('full observation', observationfull)
-        return (np.array(observationfull), info)
+        return (np.array(observationfull, dtype=np.float32), info)
 
     def render(self):
         # graphical window
@@ -398,8 +417,20 @@ class SnakeEnv(gymnasium.Env):
 
     @staticmethod
     def set_new_design(design):
-        SnakeEnv.current_design = design
-        SnakeEnv.config_numpy = np.array(design)
+        # Keep design ids in [0..3] and integer-coded.
+        rounded = [int(np.clip(np.round(v), 0, 3)) for v in design]
+        SnakeEnv.current_design = rounded
+        SnakeEnv.config_numpy = np.array(rounded, dtype=np.float32)
+
+    @staticmethod
+    def set_current_terrain(terrain_name):
+        if terrain_name not in SnakeEnv.terrains:
+            raise ValueError(f"Unknown terrain '{terrain_name}'. Use one of {SnakeEnv.terrains}")
+        SnakeEnv.current_terrain = terrain_name
+
+    @staticmethod
+    def get_current_terrain():
+        return SnakeEnv.current_terrain
       
     @staticmethod 
     def get_random_design():
