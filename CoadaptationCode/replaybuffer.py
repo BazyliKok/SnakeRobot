@@ -1,8 +1,6 @@
-from gym.spaces import Discrete
-
 from simple_replay_buffer import SimpleReplayBuffer
 import numpy as np
-from gymnasium.spaces import Box, Discrete, Tuple
+from gymnasium.spaces import Box, Dict, Discrete, Tuple
 
 
 class EnvReplayBuffer(SimpleReplayBuffer):
@@ -58,6 +56,8 @@ class EnvReplayBuffer(SimpleReplayBuffer):
             return space.n
         elif isinstance(space, Tuple):
             return sum(self.get_dim(subspace) for subspace in space.spaces)
+        elif isinstance(space, Dict):
+            return sum(self.get_dim(subspace) for subspace in space.spaces.values())
         elif hasattr(space, 'flat_dim'):
             return space.flat_dim
         else:

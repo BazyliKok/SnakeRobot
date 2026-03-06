@@ -182,7 +182,7 @@ class CoadaptReplayBuffer(ReplayBuffer):
         elif self._mode == "population":
             return self._population_buffer.num_steps_can_sample(**kwargs)
         else:
-            pass
+            raise ValueError(f"Unknown replay buffer mode: {self._mode}")
 
     def random_batch(self, batch_size):
         """
@@ -208,7 +208,7 @@ class CoadaptReplayBuffer(ReplayBuffer):
             return self._balanced_random_batch(self._init_state_buffer, batch_size)
         
         else:
-            pass
+            raise ValueError(f"Unknown replay buffer mode: {self._mode}")
 
     
     def set_mode(self, mode):
@@ -219,7 +219,7 @@ class CoadaptReplayBuffer(ReplayBuffer):
         elif mode == "start":
             self._mode = mode
         else:
-            print("No known mode :(")
+            raise ValueError(f"No known mode: {mode}")
 
     
     def reset_individual_buffer(self):
