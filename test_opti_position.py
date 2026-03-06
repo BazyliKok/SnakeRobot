@@ -1,4 +1,4 @@
-!/usr/bin/env python3
+#!/usr/bin/env python3
 """Simple terminal monitor for OptiTrack position/heading.
 
 Run this in a separate terminal while training/running other scripts to verify
