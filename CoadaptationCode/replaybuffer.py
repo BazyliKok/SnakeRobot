@@ -57,7 +57,7 @@ class EnvReplayBuffer(SimpleReplayBuffer):
         elif isinstance(space, Discrete):
             return space.n
         elif isinstance(space, Tuple):
-            return sum((subspace) for subspace in space.spaces)
+            return sum(self.get_dim(subspace) for subspace in space.spaces)
         elif hasattr(space, 'flat_dim'):
             return space.flat_dim
         else:
