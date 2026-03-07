@@ -544,7 +544,7 @@ class Train():
             f'{base_path}/pop_qf2_tar_{checkpoint_prefix}_carpet.pt'
         ).state_dict())
 
-        print("loaded networks from checkpoint: {checkpoint_prefix}")
+        print(f"loaded networks from checkpoint: {checkpoint_prefix}")
 
         metadata_path = f'{base_path}/{checkpoint_prefix}_metadata_carpet.json'
 

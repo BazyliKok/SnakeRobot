@@ -17,8 +17,14 @@ class PSO_batch(Design_Optimization):
     def optimize_design(self, design, q_network, policy_network):
         self._replay.set_mode('start')
 
-        initial_state = self._replay.random_batch(self._state_batch_size)
-        initial_state = initial_state['observations']
+        try:
+            initial_state = self._replay.random_batch(self._state_batch_size)['observations']
+        except ValueError:
+            # Fallback: if start-state buffer is empty, bootstrap from species data.
+            self._replay.set_mode('species')
+            initial_state = self._replay.random_batch(self._state_batch_size)['observations']
+            self._replay.set_mode('start')
+
         design_dim = len(design)
         state_dim = initial_state.shape[1]
         design_idx = SnakeEnv.get_design_dimensions()
