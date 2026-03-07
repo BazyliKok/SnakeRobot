@@ -161,6 +161,30 @@ class CoadaptReplayBuffer(ReplayBuffer):
         np.random.shuffle(indices)
         return self._random_batch_from_indices(buffer, indices)
 
+    def _terrain_random_batch(self, buffer, batch_size, terrain_id):
+        if buffer._size <= 0:
+            return buffer.random_batch(batch_size)
+
+        if 'terrain_id' not in buffer._env_info_keys:
+            return buffer.random_batch(batch_size)
+
+        terrain_ids = buffer._env_infos['terrain_id'][:buffer._size].reshape(-1).astype(int)
+        candidate = np.where(terrain_ids == int(terrain_id))[0]
+        if len(candidate) == 0:
+            return self._balanced_random_batch(buffer, batch_size)
+
+        replace = len(candidate) < batch_size
+        indices = np.random.choice(candidate, size=batch_size, replace=replace)
+        return self._random_batch_from_indices(buffer, indices)
+
+    def random_start_batch_for_terrain(self, batch_size, terrain_id):
+        """Sample a start-state batch from one terrain when available."""
+        return self._terrain_random_batch(
+            buffer=self._init_state_buffer,
+            batch_size=batch_size,
+            terrain_id=terrain_id,
+        )
+
     def terminate_episode(self):
         """
         :return: # of unique items that can be sampled.
@@ -229,3 +253,5 @@ class CoadaptReplayBuffer(ReplayBuffer):
             env_info_sizes=self._env_info_sizes,
         )
         self._ep_counter = 0 # reset number of episodes for next design
+
+

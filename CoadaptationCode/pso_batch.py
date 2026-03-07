@@ -44,19 +44,22 @@ class PSO_batch(Design_Optimization):
             return updated
 
         def _terrain_state_batches():
-            """Create per-terrain state batches for robust aggregation.
-
-            Replay currently does not carry explicit terrain ids in start-mode
-            sampling. We therefore draw one independent start batch per terrain
-            to approximate terrain-conditioned uncertainty in the objective.
-            """
+            """Create terrain-conditioned start-state batches for robust scoring."""
             terrain_batches = []
-            for _ in SnakeEnv.terrains:
+            for terrain_id, terrain_name in enumerate(SnakeEnv.terrains):
                 try:
-                    batch = self._replay.random_batch(self._state_batch_size)['observations']
+                    if hasattr(self._replay, 'random_start_batch_for_terrain'):
+                        sampled = self._replay.random_start_batch_for_terrain(
+                            self._state_batch_size,
+                            terrain_id,
+                        )
+                    else:
+                        sampled = self._replay.random_batch(self._state_batch_size)
+                    batch_obs = sampled['observations']
                 except Exception:
-                    batch = initial_state
-                terrain_batches.append(batch)
+                    batch_obs = initial_state
+
+                terrain_batches.append((terrain_name, batch_obs))
             return terrain_batches
 
         terrain_state_batches = _terrain_state_batches()
@@ -69,7 +72,7 @@ class PSO_batch(Design_Optimization):
                 for i in range(shape[0]):
                     x_discrete = _discretize_design(x_input[i])
                     terrain_returns = []
-                    for terrain_state_batch in terrain_state_batches:
+                    for _terrain_name, terrain_state_batch in terrain_state_batches:
                         state_batch = _inject_design(terrain_state_batch, x_discrete)
 
                         network_input = torch.from_numpy(state_batch).to(device=ptu.device, dtype=torch.float32)
@@ -106,3 +109,4 @@ class PSO_batch(Design_Optimization):
         cost, new_design = optimizer.optimize(f_qval, print_step=100, iters=5, verbose=3) #, n_processes=2) # iter was 250
         print('OPTIMIZED')
         return cost, new_design
+
