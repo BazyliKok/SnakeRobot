@@ -32,7 +32,7 @@ class Train():
         self._episode_length = 50 # number of timesteps per episode
         self.episode_counter = None
         self.episodes_before_training = 0 #4 # number of episodes before training to fill the replay buffer
-        self.episode_iterations = 30 # number of episodes per design
+        self.episode_iterations = 32 # number of episodes per design
         self.design_cylces = 20 # total number of design cycles
 
         self.episodeCumulativeRewards = []  # Stores cumulative rewards per episode
