@@ -12,6 +12,7 @@ import pandas as pd
 from scipy.interpolate import interp1d
 from scipy.spatial.transform import Rotation
 import os
+import sys
 import copy
 from datetime import datetime
 
@@ -32,8 +33,10 @@ class SnakeEnv(gymnasium.Env):
     optiYTrack = []
     prevPos = [0,0,0]
     optiRelPos = []
-    motors = motorssynced.MotorsSynced()
-    opti = optitrack.Optitrack()
+    # Hardware clients are initialized lazily in __init__ to avoid side-effects
+    # (serial/network connections) during module import.
+    motors = None
+    opti = None
     motorLock = threading.Lock()
     optiLock = threading.Lock()
     starting_angle = None
@@ -120,16 +123,17 @@ class SnakeEnv(gymnasium.Env):
             dtype='float32'
         )
         
-        self.action_space = spaces.Box(low=self.motorMin, high=self.motorMax, shape=(7,), dtype='float32') # continuous action space
-        #self.action_space = spaces.Box(low=self.motorMin, high=self.motorMax, shape=(18,), dtype='float32')
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype='float32')  # normalized actions
 
         self.targetPositionX = -100.0 # position that can't be reached, think about changing or getting rid of this
+        self._interactive_reset_default = self._read_interactive_reset_default()
 
                
         # init other things
         # moved these class declarations to static
-        self.motors = motorssynced.MotorsSynced()
-        self.opti = optitrack.Optitrack()
+        SnakeEnv._ensure_hardware_initialized()
+        self.motors = SnakeEnv.motors
+        self.opti = SnakeEnv.opti
         #self.opti.optiTrackInit()
 
         self.currPosition =[]
@@ -151,6 +155,17 @@ class SnakeEnv(gymnasium.Env):
         self.filename = "Training_" + datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
         
      
+    def _read_interactive_reset_default(self):
+        env_value = os.getenv('SNAKE_INTERACTIVE_RESET')
+        if env_value is None:
+            return sys.stdin.isatty()
+        return env_value.strip().lower() in ('1', 'true', 'yes', 'on')
+
+    def _should_prompt_for_reset(self, options=None):
+        if options and 'interactive_reset' in options:
+            return bool(options['interactive_reset'])
+        return self._interactive_reset_default
+
     def step(self, action):
 
         num_timesteps = 1  
@@ -234,7 +249,11 @@ class SnakeEnv(gymnasium.Env):
         
         super().reset(seed=seed)  # this is needed for cutom environments according to AI Gym
         self.starting_angle = None
-        input('Reset robot then press a button to continue') # used to pause to reset robot position
+        if self._should_prompt_for_reset(options):
+            try:
+                input('Reset robot then press a button to continue')
+            except EOFError:
+                print('Reset prompt skipped: stdin is not interactive.')
    
 
 
@@ -394,7 +413,7 @@ class SnakeEnv(gymnasium.Env):
         
         motorMax = self.motorMax
         motorMin = self.motorMin
-
+        action = np.clip(action, -1.0, 1.0)
         mapping = interp1d([-1, 1], [motorMin, motorMax])
         mappedList = [int(mapping(i)) for i in action]
 
@@ -404,6 +423,13 @@ class SnakeEnv(gymnasium.Env):
         The following methods are static so they can be accessed from outside environment wrapper to edit parameters with threading 
     '''
     @staticmethod
+    def _ensure_hardware_initialized():
+        if SnakeEnv.motors is None:
+            SnakeEnv.motors = motorssynced.MotorsSynced()
+        if SnakeEnv.opti is None:
+            SnakeEnv.opti = optitrack.Optitrack()
+
+    @staticmethod
     def passLocksToEnv(oLock, mLock):
         # function to pass locks into this environment
         SnakeEnv.optiLock = oLock
@@ -412,6 +438,7 @@ class SnakeEnv(gymnasium.Env):
     
     @staticmethod
     def optiPos():
+        SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.optiLock.acquire()
         try:
             SnakeEnv.optiRelPos, heading = SnakeEnv.opti.optiTrackGetPos()
@@ -435,6 +462,7 @@ class SnakeEnv(gymnasium.Env):
     
     @staticmethod
     def motorPos():
+        SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
         SnakeEnv.motorPosition = SnakeEnv.motors.readPos()
         # print('In thread', SnakeEnv.motorPosition)
@@ -449,6 +477,7 @@ class SnakeEnv(gymnasium.Env):
 
     @staticmethod
     def disableMotorTorque():
+        SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
         SnakeEnv.motorPosition = SnakeEnv.motors.disableTorque()
         SnakeEnv.motorLock.release()
@@ -457,6 +486,7 @@ class SnakeEnv(gymnasium.Env):
 
     @staticmethod
     def enableMotorTorque():
+        SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
         SnakeEnv.motorPosition = SnakeEnv.motors.enableTorque()
         SnakeEnv.motorLock.release()
@@ -504,3 +534,4 @@ class SnakeEnv(gymnasium.Env):
         
 
     
+

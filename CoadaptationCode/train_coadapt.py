@@ -161,14 +161,14 @@ class Train():
 
             currDesign = SnakeEnv.get_current_design()
             
-            while not (Done) and steps <= self._episode_length:
+            while not Done and steps < self._episode_length:
                 start = time.time()
                 
                 self.timesteps.append(steps)
 
 
-                steps += 1
-                print(f'Step: {steps}')
+                step_number = steps + 1
+                print(f'Step: {step_number}')
                 #state = torch.tensor(state)
                 #state = state.to(torch.float32)
 
@@ -203,6 +203,7 @@ class Train():
 
              
 
+                steps += 1
                 Done = terminated or truncated or (steps >= self._episode_length)
                 terminal = np.array([Done]) # turn into array for replay buffer
                 reward = np.array([reward])
@@ -658,11 +659,13 @@ class Train():
         rewardDF['Motor5_Pos'] =  self.stateList[8]
         rewardDF['Motor6_Pos'] =  self.stateList[9]
         if len(self.stateList) > 10:
-            rewardDF['Design_1'] = self.stateList[10]
+            rewardDF['Motor7_Pos'] = self.stateList[10]
         if len(self.stateList) > 11:
-            rewardDF['Design_2'] = self.stateList[11]
+            rewardDF['Design_1'] = self.stateList[11]
         if len(self.stateList) > 12:
-            rewardDF['Design_3'] = self.stateList[12]
+            rewardDF['Design_2'] = self.stateList[12]
+        if len(self.stateList) > 13:
+            rewardDF['Design_3'] = self.stateList[13]
 
         current_episode = self.episode_counter
         # read existing file if it exists and is valid
@@ -758,3 +761,4 @@ if __name__ == '__main__':
     optiThread.start() 
     trainingloopThread.start()
     trainingloopThread.join()
+

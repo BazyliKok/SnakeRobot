@@ -10,7 +10,15 @@ import os
 import sys
 import time
 
-from optitrack import Optitrack
+
+def _load_optitrack_class():
+    """Import Optitrack lazily so pytest collection stays side-effect free."""
+    try:
+        from CoadaptationCode.optitrack import Optitrack
+        return Optitrack
+    except ModuleNotFoundError:
+        from optitrack import Optitrack
+        return Optitrack
 
 
 def _changed(curr, prev, eps):
@@ -29,12 +37,14 @@ def main():
     print(f"Starting OptiTrack monitor. OPTITRACK_RIGID_BODY_ID={rigid_id}")
     print("Press Ctrl+C to stop.\n")
 
+    optitrack_cls = _load_optitrack_class()
+
     # Optitrack also parses argv; keep only this script name so our custom args
     # here do not interfere with its parser.
     old_argv = sys.argv
     sys.argv = [sys.argv[0]]
     try:
-        opti = Optitrack()
+        opti = optitrack_cls()
     finally:
         sys.argv = old_argv
 
@@ -70,3 +80,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
