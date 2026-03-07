@@ -1,4 +1,4 @@
-import json
+﻿import json
 import gymnasium as gym
 import matplotlib.pyplot as plt
 from soft_actor_critic_coadapt import SoftActorCriticCoadapt
@@ -617,8 +617,8 @@ class Train():
         self.timesteps = self.timesteps[:min_len]
         self.timestepRewards = self.timestepRewards[:min_len]
         self.cumulativeRewards = self.cumulativeRewards[:min_len]
-        xPositionList = xPositionList[:min_len]
-        yPositionList = yPositionList[:min_len]
+        xPositionList = xPositionList[-min_len:]
+        yPositionList = yPositionList[-min_len:]
         self.epList = self.epList[:min_len]
 
         for i in range(len(self.actionList)): #was 6

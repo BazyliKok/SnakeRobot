@@ -1,4 +1,4 @@
-import gymnasium
+﻿import gymnasium
 from gymnasium import spaces
 import numpy as np
 import motorssynced
@@ -169,7 +169,7 @@ class SnakeEnv(gymnasium.Env):
     def step(self, action):
 
         num_timesteps = 1  
-        assert len(action) == 7 * num_timesteps, f"Action space must now be {7 * num_timesteps} values ({7} motors × {num_timesteps} timesteps)."
+        assert len(action) == 7 * num_timesteps, f"Action space must now be {7 * num_timesteps} values ({7} motors Ã— {num_timesteps} timesteps)."
 
         # Split action into multiple consecutive timesteps
         actions = [action[i * 7: (i + 1) * 7] for i in range(num_timesteps)]
@@ -244,7 +244,9 @@ class SnakeEnv(gymnasium.Env):
     
     def reset(self, seed=None, options=None):
         # returns: observation of the initial state
-        print('in reset')
+        # Keep trajectory logs episode-local so per-episode CSV rows are aligned.
+        SnakeEnv.optiXTrack = []
+        SnakeEnv.optiYTrack = []
        
         
         super().reset(seed=seed)  # this is needed for cutom environments according to AI Gym
