@@ -49,7 +49,7 @@ class SnakeEnv(gymnasium.Env):
     '''
        Robot has 7 motors and 8 snake segments
        Action Space: 7
-       Observation Space: 12 from snake robot + 7 from design 
+       Observation Space: 4 normalized motion features + 7 normalized motors + 12 one-hot design features
     '''
 
     # setting up design framework
@@ -100,10 +100,10 @@ class SnakeEnv(gymnasium.Env):
         [3, 1, 0],  # asymmetric
     ]
 
-    config_numpy = np.array(current_design)
-    
-    
-    design_dims = list(range(11, 11 + len(current_design)))
+    design_slot_names = ['Head', 'Body', 'Tail']
+    config_numpy = np.eye(len(scale_types), dtype=np.float32)[current_design].reshape(-1)
+    base_feature_dim = 11
+    design_dims = list(range(base_feature_dim, base_feature_dim + len(config_numpy)))
     print('design dimensions!', design_dims)
     
     def __init__(self):
@@ -113,16 +113,13 @@ class SnakeEnv(gymnasium.Env):
         self.motorMax = 2674 #2500 #2673
         
        
-        base_obs_dim = 11
-        design_dim = len(SnakeEnv.config_numpy)
-        obs_dim = base_obs_dim + design_dim
+        obs_dim = SnakeEnv.base_feature_dim + len(SnakeEnv.config_numpy)
         self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
+            low=-1.0,
+            high=1.0,
             shape=(obs_dim,),
             dtype='float32'
         )
-        
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype='float32')  # normalized actions
 
         # OptiTrack stream is in meters; this env scales position by *100.
@@ -151,6 +148,7 @@ class SnakeEnv(gymnasium.Env):
         self.prevDist = 0
         self.prevPos = 0 
         self.prevXpos = 0
+        self._prev_raw_obs = None
 
         self.distList = []
         self.rewardList = []
@@ -175,6 +173,42 @@ class SnakeEnv(gymnasium.Env):
             return bool(options['interactive_reset'])
         return self._interactive_reset_default
 
+    def _normalize_motor_positions(self, motor_positions):
+        motor_positions = np.asarray(motor_positions, dtype=np.float32)
+        motor_span = max(self.motorMax - self.motorMin, 1)
+        normalized = 2.0 * (motor_positions - self.motorMin) / motor_span - 1.0
+        return np.clip(normalized, -1.0, 1.0)
+
+    def _build_policy_observation(self, raw_observation):
+        raw_observation = np.asarray(raw_observation, dtype=np.float32)
+
+        x_abs = raw_observation[0]
+        z_abs = raw_observation[2]
+        heading_norm = float(np.clip(raw_observation[3], -1.0, 1.0))
+        motor_positions_norm = self._normalize_motor_positions(raw_observation[4:])
+
+        max_distance = max(float(self.targetDistanceZ), 1.0)
+        if self.starting_position_x is None:
+            x_drift_norm = 0.0
+        else:
+            x_drift_norm = float(np.clip((x_abs - self.starting_position_x) / 25.0, -1.0, 1.0))
+
+        if self.starting_position_z is None:
+            z_progress_norm = 0.0
+            z_remaining_norm = 0.0
+        else:
+            z_progress = self.progress_direction_z * (z_abs - self.starting_position_z) / max_distance
+            z_remaining = self.progress_direction_z * (self.targetPositionZ - z_abs) / max_distance
+            z_progress_norm = float(np.clip(z_progress, -1.0, 1.0))
+            z_remaining_norm = float(np.clip(z_remaining, -1.0, 1.0))
+
+        observation = np.concatenate([
+            np.array([x_drift_norm, z_progress_norm, z_remaining_norm, heading_norm], dtype=np.float32),
+            motor_positions_norm.astype(np.float32),
+            SnakeEnv.config_numpy.astype(np.float32),
+        ])
+        return observation
+
     def step(self, action):
 
         num_timesteps = 1  
@@ -188,30 +222,28 @@ class SnakeEnv(gymnasium.Env):
             print(actionForMotors)
             self.writeAction(actionForMotors)
 
-        # Wait 0.5s before retrieving the next batch of actions
+        # Wait briefly and collect a fresh raw observation after the action.
         for i in range(3):
-            nextObs = self._get_obs()
-        #time.sleep(.2)
+            raw_next_obs = self._get_raw_obs()
 
         for i in range(5):
-            nextObs = self._get_obs()
-            #print(nextObs)
-        tmp_pos = copy.deepcopy(nextObs)
-        # nextObs[0] = nextObs[0] - self._prev_obs[0]
-        nextObs[1] = nextObs[1] - self._prev_obs[1]
-        nextObs[2] = nextObs[2] - self._prev_obs[2]
+            raw_next_obs = self._get_raw_obs()
+
+        tmp_pos = copy.deepcopy(raw_next_obs)
 
         max_wait = 50
         wait_i = 0
         eps = 1e-3
-        while abs(nextObs[0] - self._prev_obs[0]) < eps and abs(nextObs[1]) < eps and wait_i < max_wait:
-            nextObs = self._get_obs()
-            tmp_pos = copy.deepcopy(nextObs)
-            nextObs[1] = nextObs[1] - self._prev_obs[1]
-            nextObs[2] = nextObs[2] - self._prev_obs[2]
+        delta_x = tmp_pos[0] - self._prev_raw_obs[0]
+        delta_z = tmp_pos[2] - self._prev_raw_obs[2]
+        while abs(delta_x) < eps and abs(delta_z) < eps and wait_i < max_wait:
+            raw_next_obs = self._get_raw_obs()
+            tmp_pos = copy.deepcopy(raw_next_obs)
+            delta_x = tmp_pos[0] - self._prev_raw_obs[0]
+            delta_z = tmp_pos[2] - self._prev_raw_obs[2]
             wait_i += 1
 
-        self._prev_obs = tmp_pos
+        self._prev_raw_obs = tmp_pos
 
         # Log global positions
         SnakeEnv.optiXTrack.append(SnakeEnv.optiRelPos[0])  # global x position of robot
@@ -220,11 +252,6 @@ class SnakeEnv(gymnasium.Env):
         # extract Z position from absolute observation (not delta)
         currZPos = tmp_pos[2]  # opti Z position of the robot (absolute, env units)
 
-        # # reward forward movement
-        # reward = max([currXPos*0.05,0.]) * (.3- abs(nextObs[3]))  #(currXPos - self.prevPos)
-        #print("global pos")
-        #print(global_pos)
-
         max_distance = max(self.targetDistanceZ, 1.0)
         distance = abs(self.targetPositionZ - currZPos)
         prev_distance = abs(self.targetPositionZ - self.prevPos)
@@ -232,7 +259,6 @@ class SnakeEnv(gymnasium.Env):
         # Signed progress in the desired Z direction (toward target gets positive reward).
         signed_delta_z = self.progress_direction_z * (currZPos - self.prevPos)
         progress = (prev_distance - distance) / max_distance
-
 
         # check if the goal is reached along Z axis
         if self.starting_position_z is not None and self.targetPositionZ < self.starting_position_z:
@@ -244,7 +270,7 @@ class SnakeEnv(gymnasium.Env):
         # Keep the body straight: penalize heading offset and sideways X drift.
         x_drift = abs(tmp_pos[0] - self.starting_position_x)
         x_drift_penalty = min(x_drift / 25.0, 1.0)
-        heading_penalty = abs(nextObs[3])
+        heading_penalty = abs(tmp_pos[3])
 
         # Penalize tiny/no progress so the policy does not settle into micro-motions.
         stagnation_penalty = 0.05 if signed_delta_z < 0.15 else 0.0
@@ -264,18 +290,21 @@ class SnakeEnv(gymnasium.Env):
 
         print(f"Reward: {reward}")
 
+        observation = self._build_policy_observation(tmp_pos)
+
         # Log data
-        self.df.loc[len(self.df.index)] = [actionForMotors, nextObs[0:7], nextObs[7:-1], reward]
+        self.df.loc[len(self.df.index)] = [
+            actionForMotors,
+            observation.tolist(),
+            list(tmp_pos[4:]),
+            reward,
+        ]
 
         # update previous position and action
         self.prevPos = currZPos
 
-        # add design info to observation
-
-        nextObs = np.append(nextObs, SnakeEnv.config_numpy)
-        print(f"Observation: {nextObs}")
-
-        return np.array(nextObs, dtype=np.float32), reward, terminated, truncated, info
+        print(f"Observation: {observation}")
+        return np.array(observation, dtype=np.float32), reward, terminated, truncated, info
     
     def reset(self, seed=None, options=None):
         # returns: observation of the initial state
@@ -321,18 +350,14 @@ class SnakeEnv(gymnasium.Env):
         """
 
         # return current observation
-        print("about to observe")  
-        observation = self._get_obs(initial=True)
-        starting_z_abs = observation[2]
-        starting_x_abs = observation[0]
-        # observation[0] = 0.
-        observation[1] = 0.
-        observation[2] = 0.
+        print("about to observe")
+        raw_observation = self._get_raw_obs(initial=True)
+        starting_z_abs = raw_observation[2]
+        starting_x_abs = raw_observation[0]
         SnakeEnv.enableMotorTorque()
         # DO NOT UNCOMMENT IN
 
-        print('Observation: ', observation)
-        self.starting_position = observation[0]
+        self.starting_position = raw_observation[0]
         self.starting_position_x = starting_x_abs
         self.starting_position_z = starting_z_abs
         self.progress_direction_z = -1.0 if self.targetPositionZ < self.starting_position_z else 1.0
@@ -343,16 +368,13 @@ class SnakeEnv(gymnasium.Env):
         )
         self.prevPos = starting_z_abs
         self.prevXpos = starting_x_abs
+        self._prev_raw_obs = copy.deepcopy(raw_observation)
 
-        self._prev_obs = copy.deepcopy(observation)
-
+        observation = self._build_policy_observation(raw_observation)
+        print('Observation: ', observation)
 
         info = {'info': 0}
-
-        observationfull = np.append(observation, SnakeEnv.config_numpy)
-
-        print('full observation', observationfull)
-        return (np.array(observationfull, dtype=np.float32), info)
+        return (np.array(observation, dtype=np.float32), info)
 
     def render(self):
         # graphical window
@@ -367,14 +389,15 @@ class SnakeEnv(gymnasium.Env):
         # can use this method to create a random seed
         pass
 
-    def _get_obs(self, initial=False):
+    def _get_raw_obs(self, initial=False):
         # read agent x,y,z,etc and target goal pos
-        # return {"agent": self._agent_location, "target": self._target_location}
-        
         self.agentPos = self.getPosition(initial)
-       
         return [*self.agentPos]
-    
+
+    def _get_obs(self, initial=False):
+        raw_observation = self._get_raw_obs(initial)
+        return self._build_policy_observation(raw_observation)
+
     def getPosition(self, initial):
        
         # motorPos = self.motors.readPos()
@@ -546,7 +569,40 @@ class SnakeEnv(gymnasium.Env):
         # Keep design ids in [0..3] and integer-coded.
         rounded = [int(np.clip(np.round(v), 0, 3)) for v in design]
         SnakeEnv.current_design = rounded
-        SnakeEnv.config_numpy = np.array(rounded, dtype=np.float32)
+        SnakeEnv.config_numpy = SnakeEnv.encode_design_vector(rounded)
+
+    @staticmethod
+    def encode_design_vector(design):
+        design_ids = [int(np.clip(np.round(v), 0, len(SnakeEnv.scale_types) - 1)) for v in design]
+        encoded = np.zeros(len(design_ids) * len(SnakeEnv.scale_types), dtype=np.float32)
+        for idx, design_id in enumerate(design_ids):
+            encoded[idx * len(SnakeEnv.scale_types) + design_id] = 1.0
+        return encoded
+
+    @staticmethod
+    def get_design_feature_labels():
+        labels = []
+        scale_ids = sorted(SnakeEnv.scale_types.keys())
+        for slot_idx in range(len(SnakeEnv.current_design)):
+            if slot_idx < len(SnakeEnv.design_slot_names):
+                slot_name = SnakeEnv.design_slot_names[slot_idx]
+            else:
+                slot_name = f'Segment{slot_idx + 1}'
+            for scale_id in scale_ids:
+                labels.append(f'{slot_name}_{SnakeEnv.scale_types[scale_id]}')
+        return labels
+
+    @staticmethod
+    def get_observation_feature_labels():
+        motor_labels = [f'Motor{i + 1}_Norm' for i in range(7)]
+        return [
+            'X_Drift_Norm',
+            'Z_Progress_Norm',
+            'Z_Remaining_Norm',
+            'Heading_Norm',
+            *motor_labels,
+            *SnakeEnv.get_design_feature_labels(),
+        ]
 
     @staticmethod
     def set_current_terrain(terrain_name):

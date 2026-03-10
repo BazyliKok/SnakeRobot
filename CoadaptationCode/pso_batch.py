@@ -27,10 +27,11 @@ class PSO_batch(Design_Optimization):
 
         design_dim = len(design)
         state_dim = initial_state.shape[1]
+        design_feature_dim = len(SnakeEnv.config_numpy)
         design_idx = SnakeEnv.get_design_dimensions()
         valid_design_idx = [int(i) for i in design_idx if 0 <= int(i) < state_dim]
-        if len(valid_design_idx) != design_dim:
-            valid_design_idx = list(range(state_dim - design_dim, state_dim))
+        if len(valid_design_idx) != design_feature_dim:
+            valid_design_idx = list(range(state_dim - design_feature_dim, state_dim))
 
         lower_bounds = np.array([l for l, _ in SnakeEnv.design_parameter_bounds], dtype=np.float32)
         upper_bounds = np.array([u for _, u in SnakeEnv.design_parameter_bounds], dtype=np.float32)
@@ -40,7 +41,8 @@ class PSO_batch(Design_Optimization):
 
         def _inject_design(observation_batch, x_design):
             updated = observation_batch.copy()
-            updated[:, valid_design_idx] = x_design
+            encoded_design = SnakeEnv.encode_design_vector(x_design)
+            updated[:, valid_design_idx] = encoded_design
             return updated
 
         def _terrain_state_batches():

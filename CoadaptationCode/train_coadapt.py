@@ -705,27 +705,13 @@ class Train():
             rewardDF[f'Motor{motor_idx + 1}_Action'] = motor_actions
       
 
-        # log state variables
-        rewardDF['X_State'] = self.stateList[0]
-        rewardDF['Y_State'] = self.stateList[1]
-        rewardDF['Z_State'] = self.stateList[2]
-        #rewardDF['X_Heading'] = self.stateList[3]
-        rewardDF['Y_Heading'] = self.stateList[3]
-        #rewardDF['Z_Heading'] = self.stateList[5]
-        rewardDF['Motor1_Pos'] = self.stateList[4]
-        rewardDF['Motor2_Pos'] = self.stateList[5]
-        rewardDF['Motor3_Pos'] = self.stateList[6]
-        rewardDF['Motor4_Pos'] = self.stateList[7]
-        rewardDF['Motor5_Pos'] =  self.stateList[8]
-        rewardDF['Motor6_Pos'] =  self.stateList[9]
-        if len(self.stateList) > 10:
-            rewardDF['Motor7_Pos'] = self.stateList[10]
-        if len(self.stateList) > 11:
-            rewardDF['Design_1'] = self.stateList[11]
-        if len(self.stateList) > 12:
-            rewardDF['Design_2'] = self.stateList[12]
-        if len(self.stateList) > 13:
-            rewardDF['Design_3'] = self.stateList[13]
+        observation_labels = SnakeEnv.get_observation_feature_labels()
+        for obs_idx, obs_values in enumerate(self.stateList):
+            if obs_idx < len(observation_labels):
+                column_name = observation_labels[obs_idx]
+            else:
+                column_name = f'Obs_{obs_idx}'
+            rewardDF[column_name] = obs_values
 
         current_episode = self.episode_counter
         # read existing file if it exists and is valid
