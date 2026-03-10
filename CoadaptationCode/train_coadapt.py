@@ -181,7 +181,7 @@ class Train():
                 
                 # exploration vs exploitation
                 # keep stochasticity/noise so actions do not collapse to one extreme command
-                if self.currEp >= self.episodes_before_training:  # can start training, exploitation
+                if self.episode_counter > self.episodes_before_training:  # match training gate before switching to policy actions
                     action, _ = self.policy.get_action(state)
                 else:  # purely exploring
                     action = np.random.uniform(-1, 1, size=7)
@@ -821,3 +821,4 @@ if __name__ == '__main__':
     optiThread.start() 
     trainingloopThread.start()
     trainingloopThread.join()
+
