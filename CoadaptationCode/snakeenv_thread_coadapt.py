@@ -1,4 +1,4 @@
-﻿import gymnasium
+import gymnasium
 from gymnasium import spaces
 import numpy as np
 import motorssynced
@@ -130,7 +130,7 @@ class SnakeEnv(gymnasium.Env):
         # target z = -900 mm -> env units -90.0 (position is meters * 100).
         self.targetDistanceZ = 190.0  # overwritten on reset from observed start z
         self.starting_position_z = None
-        self.starting_position_y = None
+        self.starting_position_x = None
         self.progress_direction_z = -1
         self.targetPositionY = 19.5231
         self.targetPositionZ = -90.0
@@ -150,7 +150,7 @@ class SnakeEnv(gymnasium.Env):
         self.reward = 0
         self.prevDist = 0
         self.prevPos = 0 
-        self.prevYpos = 0
+        self.prevXpos = 0
 
         self.distList = []
         self.rewardList = []
@@ -178,7 +178,7 @@ class SnakeEnv(gymnasium.Env):
     def step(self, action):
 
         num_timesteps = 1  
-        assert len(action) == 7 * num_timesteps, f"Action space must now be {7 * num_timesteps} values ({7} motors Ã— {num_timesteps} timesteps)."
+        assert len(action) == 7 * num_timesteps, f"Action space must now be {7 * num_timesteps} values ({7} motors x {num_timesteps} timesteps)."
 
         # Split action into multiple consecutive timesteps
         actions = [action[i * 7: (i + 1) * 7] for i in range(num_timesteps)]
@@ -241,21 +241,21 @@ class SnakeEnv(gymnasium.Env):
             terminated = currZPos >= self.targetPositionZ
         print(f"Step check: currZ={currZPos:.3f}, targetZ={self.targetPositionZ:.3f}, terminated={terminated}")
 
-        # Keep the body straight: penalize heading offset and Y drift from start line.
-        y_drift = abs(tmp_pos[1] - self.starting_position_y)
-        y_drift_penalty = min(y_drift / 25.0, 1.0)
+        # Keep the body straight: penalize heading offset and sideways X drift.
+        x_drift = abs(tmp_pos[0] - self.starting_position_x)
+        x_drift_penalty = min(x_drift / 25.0, 1.0)
         heading_penalty = abs(nextObs[3])
 
         # Penalize tiny/no progress so the policy does not settle into micro-motions.
         stagnation_penalty = 0.05 if signed_delta_z < 0.15 else 0.0
 
-        reward = (1.2 * progress) + (0.35 * signed_delta_z) - (0.20 * y_drift_penalty) - (0.20 * heading_penalty) - stagnation_penalty
+        reward = (1.2 * progress) + (0.35 * signed_delta_z) - (0.20 * x_drift_penalty) - (0.20 * heading_penalty) - stagnation_penalty
         if terminated:
             reward += 1.0
         reward = float(np.clip(reward, -2.0, 2.0))
         print(
             f"reward components -> progress: {progress:.4f}, signed_delta_z: {signed_delta_z:.4f}, "
-            f"y_drift_penalty: {y_drift_penalty:.4f}, heading_penalty: {heading_penalty:.4f}, "
+            f"x_drift_penalty: {x_drift_penalty:.4f}, heading_penalty: {heading_penalty:.4f}, "
             f"stagnation_penalty: {stagnation_penalty:.4f}"
         )
 
@@ -324,7 +324,7 @@ class SnakeEnv(gymnasium.Env):
         print("about to observe")  
         observation = self._get_obs(initial=True)
         starting_z_abs = observation[2]
-        starting_y_abs = observation[0]
+        starting_x_abs = observation[0]
         # observation[0] = 0.
         observation[1] = 0.
         observation[2] = 0.
@@ -333,7 +333,7 @@ class SnakeEnv(gymnasium.Env):
 
         print('Observation: ', observation)
         self.starting_position = observation[0]
-        self.starting_position_y = starting_y_abs
+        self.starting_position_x = starting_x_abs
         self.starting_position_z = starting_z_abs
         self.progress_direction_z = -1.0 if self.targetPositionZ < self.starting_position_z else 1.0
         self.targetDistanceZ = abs(self.targetPositionZ - self.starting_position_z)
@@ -342,7 +342,7 @@ class SnakeEnv(gymnasium.Env):
             f"distance {self.targetDistanceZ:.3f}, direction {self.progress_direction_z:+.0f})"
         )
         self.prevPos = starting_z_abs
-        self.prevYPos = starting_y_abs
+        self.prevXpos = starting_x_abs
 
         self._prev_obs = copy.deepcopy(observation)
 
@@ -579,7 +579,3 @@ class SnakeEnv(gymnasium.Env):
     def get_number_of_init_designs():
         print('NUM DESIGNS', len(SnakeEnv.init_design_parameters))
         return len(SnakeEnv.init_design_parameters)
-        
-
-    
-
