@@ -1,4 +1,4 @@
-
+﻿
 # coding: utf-8
 """Command-line NatNet client application for testing.
 
@@ -88,22 +88,16 @@ class ClientApp(object):
         if rigid_bodies:
             selected_body = None
 
-            if self.target_rigid_body_id is None:
-                selected_body = rigid_bodies[0]
-            else:
-                for b in rigid_bodies:
-                    if b.id_ == self.target_rigid_body_id:
-                        selected_body = b
-                        break
-                if selected_body is None:
-                    selected_body = rigid_bodies[0]
-                    now = time.time()
-                    if now - self._last_target_missing_printed > 2:
-                        print(
-                            f"Configured rigid body id {self.target_rigid_body_id} not present; "
-                            f"falling back to id {selected_body.id_}."
-                        )
-                        self._last_target_missing_printed = now
+            for b in rigid_bodies:
+                if b.id_ == self.target_rigid_body_id:
+                    selected_body = b
+                    break
+
+            if selected_body is None:
+                now = time.time()
+                if now - self._last_target_missing_printed > 2:
+                    print(f"Configured rigid body id {self.target_rigid_body_id} not present in this frame.")
+                    self._last_target_missing_printed = now
 
             if selected_body is not None:
                 self.optiData.append([time.time(), selected_body.id_, *(selected_body.position + selected_body.orientation)])
@@ -151,12 +145,7 @@ class Optitrack:
         parser.add_argument('--quiet', action='store_true')
         self.args, _unknown = parser.parse_known_args()
 
-        target_rigid_body_id_env = os.getenv('OPTITRACK_RIGID_BODY_ID', '4')
-        try:
-            self.target_rigid_body_id = int(target_rigid_body_id_env) if target_rigid_body_id_env else None
-        except ValueError:
-            print(f"Invalid OPTITRACK_RIGID_BODY_ID='{target_rigid_body_id_env}'. Using first visible rigid body.")
-            self.target_rigid_body_id = None
+        self.target_rigid_body_id = 15
 
         folder = 'mocap-data'
         file_path = './' + folder + '/' + file_extension
