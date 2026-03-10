@@ -46,8 +46,8 @@ class SoftActorCriticCoadapt(RLAlgorithm):
 
         # define training parameters
         self._batch_size = 32
-        self._nmbr_ind_updates = 1000 # was 1000 TODO: LOOK AT EHAT TO SET THIS TO number of gradietn updates?
-        self._nmbr_pop_updates = 100 # was 250 number of gradietn updates? per episode, was 300
+        self._nmbr_ind_updates = 100  # cap on individual SAC updates per train call
+        self._nmbr_pop_updates = 50  # cap on population SAC updates per train call
 
         # set up trainer 
         self._ind_algorithm =  SACTrainer(
@@ -164,7 +164,13 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         print('IN TRAINING')
         if train_ind:
             self._replay.set_mode('species')
-            for i in range(self._nmbr_ind_updates):
+            ind_steps_can_sample = self._replay.num_steps_can_sample()
+            ind_updates = min(
+                self._nmbr_ind_updates,
+                max(1, int(np.ceil(ind_steps_can_sample / self._batch_size)))
+            )
+            print(f'individual SAC updates: {ind_updates} from {ind_steps_can_sample} replay steps')
+            for i in range(ind_updates):
                 #print('in ind for')
                 batch = self._replay.random_batch(self._batch_size)
                 self._ind_algorithm.train(batch)
@@ -178,7 +184,13 @@ class SoftActorCriticCoadapt(RLAlgorithm):
 
         if train_pop:
             self._replay.set_mode('population')
-            for i in range(self._nmbr_pop_updates):
+            pop_steps_can_sample = self._replay.num_steps_can_sample()
+            pop_updates = min(
+                self._nmbr_pop_updates,
+                max(1, int(np.ceil(pop_steps_can_sample / self._batch_size)))
+            )
+            print(f'population SAC updates: {pop_updates} from {pop_steps_can_sample} replay steps')
+            for i in range(pop_updates):
                 #print('in pop for')
                 batch = self._replay.random_batch(self._batch_size)
                 self._pop_algorithm.train(batch)
