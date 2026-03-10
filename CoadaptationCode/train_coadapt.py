@@ -19,6 +19,7 @@ from pso_batch import PSO_batch
 import time
 import rlkit.torch.pytorch_util as ptu
 from motorssynced import MotorsSynced
+from collections import Counter
 
 from datetime import datetime
 
@@ -32,8 +33,20 @@ class Train():
         self._episode_length = 150 # number of timesteps per episode
         self.episode_counter = None
         self.episodes_before_training = 0 #4 # number of episodes before training to fill the replay buffer
-        self.episode_iterations = 32 # number of episodes per design
         self.design_cylces = 20 # total number of design cycles
+        self.terrain_sequence = list(SnakeEnv.terrains)
+        self.training_terrain_block_size = 8
+        self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size # number of episodes per design
+        self.results_tag = 'mixed_terrain'
+        self.legacy_results_tags = [self.results_tag, 'carpet']
+        self.terrain_name_to_id = {terrain: idx for idx, terrain in enumerate(self.terrain_sequence)}
+        self.training_terrain_block_order = []
+        self.training_episode_schedule = []
+        self.training_schedule_design_counter = None
+        self.current_training_terrain = None
+        self.current_training_terrain_id = -1
+        self.current_training_block_index = -1
+        self.current_training_episode_in_block = -1
 
         # Keep commands changing so the robot does not lock into one saturated pose.
         self.action_noise_std = 0.10
@@ -68,7 +81,6 @@ class Train():
         
 
         self.date = datetime.now().strftime("%Y_%m_%d") # for files
-        self.terrain_sequence = ['floor', 'carpet', 'cardboard', 'artificial_grass']
         self.eval_episodes_per_terrain = 3
         self.eval_robustness_lambda = 0.5
         
@@ -97,10 +109,76 @@ class Train():
 
     def _set_output_filenames(self):
         self.date = datetime.now().strftime("%Y_%m_%d")
-        name = "Rewards_Design{}_carpet".format(str(self.design_counter))
+        name = "Rewards_Design{}_{}".format(str(self.design_counter), self.results_tag)
         self.filename = self.date+name
-        name = "Losses_Design{}_carpet".format(str(self.design_counter))
+        name = "Losses_Design{}_{}".format(str(self.design_counter), self.results_tag)
         self.lossFilename = self.date+name
+
+    def _build_randomized_training_schedule(self):
+        terrain_block_order = list(np.random.permutation(self.terrain_sequence))
+        episode_schedule = []
+        for terrain in terrain_block_order:
+            episode_schedule.extend([terrain] * self.training_terrain_block_size)
+        return terrain_block_order, episode_schedule
+
+    def _has_valid_training_schedule(self):
+        expected_blocks = len(self.terrain_sequence)
+        expected_episodes = expected_blocks * self.training_terrain_block_size
+        if len(self.training_terrain_block_order) != expected_blocks:
+            return False
+        if len(self.training_episode_schedule) != expected_episodes:
+            return False
+        if Counter(self.training_terrain_block_order) != Counter(self.terrain_sequence):
+            return False
+
+        for block_idx, terrain in enumerate(self.training_terrain_block_order):
+            start = block_idx * self.training_terrain_block_size
+            end = start + self.training_terrain_block_size
+            if self.training_episode_schedule[start:end] != [terrain] * self.training_terrain_block_size:
+                return False
+
+        return True
+
+    def _ensure_design_training_schedule(self):
+        if (
+            self.training_schedule_design_counter == self.design_counter
+            and self._has_valid_training_schedule()
+        ):
+            return
+
+        if self.episode_counter not in (None, 0):
+            print(
+                'No saved mixed-terrain schedule found for this design; '
+                'generating a new randomized terrain block order for the remaining episodes.'
+            )
+
+        self.training_terrain_block_order, self.training_episode_schedule = self._build_randomized_training_schedule()
+        self.training_schedule_design_counter = self.design_counter
+        print(
+            f"Design {self.design_counter} terrain block order: "
+            f"{' -> '.join(self.training_terrain_block_order)}"
+        )
+
+    def _get_training_terrain_for_episode(self, episode_idx):
+        self._ensure_design_training_schedule()
+        if episode_idx < 0 or episode_idx >= len(self.training_episode_schedule):
+            raise IndexError(
+                f'Episode index {episode_idx} is out of range for '
+                f'{len(self.training_episode_schedule)} scheduled training episodes.'
+            )
+
+        terrain = self.training_episode_schedule[episode_idx]
+        terrain_id = self.terrain_name_to_id[terrain]
+        block_idx = episode_idx // self.training_terrain_block_size
+        episode_in_block = episode_idx % self.training_terrain_block_size
+        return terrain, terrain_id, block_idx, episode_in_block
+
+    def _resolve_tagged_path(self, base_path, stem, extension):
+        for tag in self.legacy_results_tags:
+            candidate = os.path.join(base_path, f'{stem}_{tag}.{extension}')
+            if os.path.exists(candidate):
+                return candidate
+        return os.path.join(base_path, f'{stem}_{self.results_tag}.{extension}')
 
     def run(self, stopEvent, max_design_cycles_per_run=1):
         """ Runs Fast Evolution through Actor-Critic RL algorithm.
@@ -148,10 +226,18 @@ class Train():
             self.timesteps = []
 
             # reset environment
-            terrain_idx = self.episode_counter % len(self.terrain_sequence)
-            terrain = self.terrain_sequence[terrain_idx]
+            terrain, terrain_idx, block_idx, episode_in_block = self._get_training_terrain_for_episode(self.episode_counter)
+            self.current_training_terrain = terrain
+            self.current_training_terrain_id = terrain_idx
+            self.current_training_block_index = block_idx
+            self.current_training_episode_in_block = episode_in_block
             SnakeEnv.set_current_terrain(terrain)
-            print(f"CURRENT TERRAIN: {terrain}. Place robot on this terrain before continuing reset.")
+            print(
+                f"CURRENT TERRAIN: {terrain} "
+                f"(block {block_idx + 1}/{len(self.terrain_sequence)}, "
+                f"episode {episode_in_block + 1}/{self.training_terrain_block_size}). "
+                f"Place robot on this terrain before continuing reset."
+            )
             state, info = self.env.reset()
             state_dim = len(state)
             self.stateList = [[] for _ in range(state_dim)]
@@ -306,6 +392,7 @@ class Train():
         self.data_design_type = 'Optimized'
         self.initialize_episode()
         SnakeEnv.set_new_design(self.optimized_params)
+        self._ensure_design_training_schedule()
 
         # Reinforcement Learning
         start_ep = self.episode_counter
@@ -387,6 +474,7 @@ class Train():
 
         SnakeEnv.set_new_design(params)
         self.initialize_episode() 
+        self._ensure_design_training_schedule()
 
         
         #for _ in range(self.episode_counter, self.episode_iterations): # train motor controls for this design iteration #added self.episode_counter
@@ -444,10 +532,10 @@ class Train():
         terrain_std = {terrain: float(np.std(vals)) for terrain, vals in terrain_returns.items()}
 
         mean_return_per_terrain = np.array(list(terrain_means.values()), dtype=np.float32)
-        overall_mean = float(np.mean(mean_return_per_terrain))
+        mean_return = float(np.mean(mean_return_per_terrain))
         worst_terrain_return = float(np.min(mean_return_per_terrain))
         std_across_terrains = float(np.std(mean_return_per_terrain))
-        robustness_score = float(overall_mean - self.eval_robustness_lambda * std_across_terrains)
+        robustness_score = float(mean_return - self.eval_robustness_lambda * std_across_terrains)
 
         summary_row = {
             'Date': self.date,
@@ -456,10 +544,16 @@ class Train():
             'Scale_Head': int(SnakeEnv.get_current_design()[0]),
             'Scale_Body': int(SnakeEnv.get_current_design()[1]),
             'Scale_Tail': int(SnakeEnv.get_current_design()[2]),
+            'Training_Episodes_Per_Design': int(self.episode_iterations),
+            'Training_Terrain_Block_Size': int(self.training_terrain_block_size),
+            'Training_Terrain_Block_Order': '|'.join(self.training_terrain_block_order),
             'Eval_Episodes_Per_Terrain': int(self.eval_episodes_per_terrain),
-            'Overall_Mean_Return': overall_mean,
+            'Mean_Return': mean_return,
+            'Std_Across_Terrains': std_across_terrains,
             'Worst_Terrain_Return': worst_terrain_return,
+            'Overall_Mean_Return': mean_return,
             'Std_Across_Terrain_Means': std_across_terrains,
+            'Robustness_Lambda': float(self.eval_robustness_lambda),
             'Robustness_Score': robustness_score,
         }
 
@@ -497,70 +591,75 @@ class Train():
 
         results_dir = 'results_bazyli'
         os.makedirs(results_dir, exist_ok=True)
+        checkpoint_prefix = f'{self.date}_Design{self.design_counter}_ep{self.episode_counter}'
 
-        torch.save(self.rl_alg._ind_policy, os.path.join(results_dir, 'ind_policy_{}_Design{}_ep{}_carpet.pt'.format(self.date, self.design_counter, self.episode_counter)))
-        torch.save(self.rl_alg._ind_qf1, os.path.join(results_dir, 'ind_qf1_{}_Design{}_ep{}_carpet.pt'.format(self.date, self.design_counter, self.episode_counter)))
-        torch.save(self.rl_alg._ind_qf2, os.path.join(results_dir, 'ind_qf2_{}_Design{}_ep{}_carpet.pt'.format(self.date, self.design_counter, self.episode_counter)))
-        torch.save(self.rl_alg._ind_qf1_target, os.path.join(results_dir, 'ind_qf1_tar_{}_Design{}_ep{}_carpet.pt'.format(self.date, self.design_counter, self.episode_counter)))
-        torch.save(self.rl_alg._ind_qf2_target, os.path.join(results_dir, 'ind_qf2_tar_{}_Design{}_ep{}_carpet.pt'.format(self.date, self.design_counter, self.episode_counter)))
+        torch.save(self.rl_alg._ind_policy, os.path.join(results_dir, f'ind_policy_{checkpoint_prefix}_{self.results_tag}.pt'))
+        torch.save(self.rl_alg._ind_qf1, os.path.join(results_dir, f'ind_qf1_{checkpoint_prefix}_{self.results_tag}.pt'))
+        torch.save(self.rl_alg._ind_qf2, os.path.join(results_dir, f'ind_qf2_{checkpoint_prefix}_{self.results_tag}.pt'))
+        torch.save(self.rl_alg._ind_qf1_target, os.path.join(results_dir, f'ind_qf1_tar_{checkpoint_prefix}_{self.results_tag}.pt'))
+        torch.save(self.rl_alg._ind_qf2_target, os.path.join(results_dir, f'ind_qf2_tar_{checkpoint_prefix}_{self.results_tag}.pt'))
 
 
-        torch.save(self.rl_alg._pop_policy, os.path.join(results_dir, 'pop_policy_{}_Design{}_ep{}_carpet.pt'.format(self.date, self.design_counter, self.episode_counter)))
-        torch.save(self.rl_alg._pop_qf1, os.path.join(results_dir, 'pop_qf1_{}_Design{}_ep{}_carpet.pt'.format(self.date, self.design_counter, self.episode_counter)))
-        torch.save(self.rl_alg._pop_qf2, os.path.join(results_dir, 'pop_qf2_{}_Design{}_ep{}_carpet.pt'.format(self.date, self.design_counter, self.episode_counter)))
-        torch.save(self.rl_alg._pop_qf1_target, os.path.join(results_dir, 'pop_qf1_tar_{}_Design{}_ep{}_carpet.pt'.format(self.date, self.design_counter, self.episode_counter)))
-        torch.save(self.rl_alg._pop_qf2_target, os.path.join(results_dir, 'pop_qf2_tar_{}_Design{}_ep{}_carpet.pt'.format(self.date, self.design_counter, self.episode_counter)))
+        torch.save(self.rl_alg._pop_policy, os.path.join(results_dir, f'pop_policy_{checkpoint_prefix}_{self.results_tag}.pt'))
+        torch.save(self.rl_alg._pop_qf1, os.path.join(results_dir, f'pop_qf1_{checkpoint_prefix}_{self.results_tag}.pt'))
+        torch.save(self.rl_alg._pop_qf2, os.path.join(results_dir, f'pop_qf2_{checkpoint_prefix}_{self.results_tag}.pt'))
+        torch.save(self.rl_alg._pop_qf1_target, os.path.join(results_dir, f'pop_qf1_tar_{checkpoint_prefix}_{self.results_tag}.pt'))
+        torch.save(self.rl_alg._pop_qf2_target, os.path.join(results_dir, f'pop_qf2_tar_{checkpoint_prefix}_{self.results_tag}.pt'))
 
         
         metadata = {
             'design_counter': self.design_counter,
             'episode_counter': self.episode_counter,
-            'optimized_params': getattr(self, 'optimized_params', None) 
+            'optimized_params': getattr(self, 'optimized_params', None),
+            'training_terrain_block_order': list(self.training_terrain_block_order),
+            'training_episode_schedule': list(self.training_episode_schedule),
+            'training_schedule_design_counter': self.training_schedule_design_counter,
+            'training_terrain_block_size': self.training_terrain_block_size,
         }
 
-        with open(os.path.join(results_dir, f'{self.date}_Design{self.design_counter}_ep{self.episode_counter}_metadata_carpet.json'), 'w') as f:
+        with open(os.path.join(results_dir, f'{checkpoint_prefix}_metadata_{self.results_tag}.json'), 'w') as f:
             json.dump(metadata, f)
 
-        self.save_replay(os.path.join(results_dir, f'replay_{self.date}_Design{self.design_counter}_carpet.pt'))
+        self.save_replay(os.path.join(results_dir, f'replay_{self.date}_Design{self.design_counter}_{self.results_tag}.pt'))
 
         print(f"saved networks for design {self.design_counter} and episode {self.episode_counter}")    
 
     def load_networks(self, base_path, checkpoint_prefix):
         self.rl_alg._ind_policy.load_state_dict(torch.load(
-            f'{base_path}/ind_policy_{checkpoint_prefix}_carpet.pt'
+            self._resolve_tagged_path(base_path, f'ind_policy_{checkpoint_prefix}', 'pt')
         ).state_dict())
         self.rl_alg._ind_qf1.load_state_dict(torch.load(
-            f'{base_path}/ind_qf1_{checkpoint_prefix}_carpet.pt'
+            self._resolve_tagged_path(base_path, f'ind_qf1_{checkpoint_prefix}', 'pt')
         ).state_dict())
         self.rl_alg._ind_qf2.load_state_dict(torch.load(
-            f'{base_path}/ind_qf2_{checkpoint_prefix}_carpet.pt'
+            self._resolve_tagged_path(base_path, f'ind_qf2_{checkpoint_prefix}', 'pt')
         ).state_dict())
         self.rl_alg._ind_qf1_target.load_state_dict(torch.load(
-            f'{base_path}/ind_qf1_tar_{checkpoint_prefix}_carpet.pt'
+            self._resolve_tagged_path(base_path, f'ind_qf1_tar_{checkpoint_prefix}', 'pt')
         ).state_dict())
         self.rl_alg._ind_qf2_target.load_state_dict(torch.load(
-            f'{base_path}/ind_qf2_tar_{checkpoint_prefix}_carpet.pt'
+            self._resolve_tagged_path(base_path, f'ind_qf2_tar_{checkpoint_prefix}', 'pt')
         ).state_dict())
 
         self.rl_alg._pop_policy.load_state_dict(torch.load(
-            f'{base_path}/pop_policy_{checkpoint_prefix}_carpet.pt'
+            self._resolve_tagged_path(base_path, f'pop_policy_{checkpoint_prefix}', 'pt')
         ).state_dict())
         self.rl_alg._pop_qf1.load_state_dict(torch.load(
-            f'{base_path}/pop_qf1_{checkpoint_prefix}_carpet.pt'
+            self._resolve_tagged_path(base_path, f'pop_qf1_{checkpoint_prefix}', 'pt')
         ).state_dict())
         self.rl_alg._pop_qf2.load_state_dict(torch.load(
-            f'{base_path}/pop_qf2_{checkpoint_prefix}_carpet.pt'
+            self._resolve_tagged_path(base_path, f'pop_qf2_{checkpoint_prefix}', 'pt')
         ).state_dict())
         self.rl_alg._pop_qf1_target.load_state_dict(torch.load(
-            f'{base_path}/pop_qf1_tar_{checkpoint_prefix}_carpet.pt'
+            self._resolve_tagged_path(base_path, f'pop_qf1_tar_{checkpoint_prefix}', 'pt')
         ).state_dict())
         self.rl_alg._pop_qf2_target.load_state_dict(torch.load(
-            f'{base_path}/pop_qf2_tar_{checkpoint_prefix}_carpet.pt'
+            self._resolve_tagged_path(base_path, f'pop_qf2_tar_{checkpoint_prefix}', 'pt')
         ).state_dict())
 
         print(f"loaded networks from checkpoint: {checkpoint_prefix}")
 
-        metadata_path = f'{base_path}/{checkpoint_prefix}_metadata_carpet.json'
+        metadata_path = self._resolve_tagged_path(base_path, f'{checkpoint_prefix}_metadata', 'json')
 
         if os.path.exists(metadata_path):
             with open(metadata_path, 'r') as f:
@@ -568,11 +667,22 @@ class Train():
             self.design_counter = metadata['design_counter']
             self.episode_counter = metadata['episode_counter']
             self.optimized_params = metadata.get('optimized_params', None)
+            self.training_terrain_block_order = metadata.get('training_terrain_block_order', [])
+            self.training_episode_schedule = metadata.get('training_episode_schedule', [])
+            self.training_schedule_design_counter = metadata.get(
+                'training_schedule_design_counter',
+                self.design_counter if self.training_episode_schedule else None,
+            )
+            self.training_terrain_block_size = metadata.get(
+                'training_terrain_block_size',
+                self.training_terrain_block_size,
+            )
+            self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size
             print(f"restored design_counter={self.design_counter}, episode_counter={self.episode_counter}")
         else:
             print("no metadata file found; counters not restored.")
 
-        replay_path = f'{base_path}/replay_{checkpoint_prefix.split("_ep")[0]}_carpet.pt'
+        replay_path = self._resolve_tagged_path(base_path, f'replay_{checkpoint_prefix.split("_ep")[0]}', 'pt')
         if os.path.exists(replay_path):
             self.load_replay(replay_path)
             print("Replay contains", self.replay._individual_buffer._size, "steps")
@@ -695,7 +805,9 @@ class Train():
         rewardDF['Cumulative_Rewards'] = self.cumulativeRewards
         rewardDF['Terrain'] = [SnakeEnv.get_current_terrain()] * len(self.timesteps)
         design = SnakeEnv.get_current_design()
-        rewardDF['Terrain_ID'] = [self.episode_counter % len(self.terrain_sequence)] * len(self.timesteps)
+        rewardDF['Terrain_ID'] = [self.current_training_terrain_id] * len(self.timesteps)
+        rewardDF['Terrain_Block_Index'] = [self.current_training_block_index] * len(self.timesteps)
+        rewardDF['Episode_In_Terrain_Block'] = [self.current_training_episode_in_block] * len(self.timesteps)
         rewardDF['Scale_Head'] = [int(design[0])] * len(self.timesteps)
         rewardDF['Scale_Body'] = [int(design[1])] * len(self.timesteps)
         rewardDF['Scale_Tail'] = [int(design[2])] * len(self.timesteps)
