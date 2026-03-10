@@ -29,11 +29,16 @@ class Train():
     
         self._reward_scale = 1.0
         self.optimized_params = None
-        self._episode_length = 50 # number of timesteps per episode
+        self._episode_length = 150 # number of timesteps per episode
         self.episode_counter = None
         self.episodes_before_training = 0 #4 # number of episodes before training to fill the replay buffer
         self.episode_iterations = 32 # number of episodes per design
         self.design_cylces = 20 # total number of design cycles
+
+        # Keep commands changing so the robot does not lock into one saturated pose.
+        self.action_noise_std = 0.10
+        self.repeat_action_eps = 0.02
+        self.repeat_action_perturb_std = 0.08
 
         self.episodeCumulativeRewards = []  # Stores cumulative rewards per episode
         self.cumulativeRewards = []  # Stores cumulative rewards per step
@@ -154,6 +159,7 @@ class Train():
             episodeRewards = 0
             episodeContRewards = []
             Done = False
+            prev_action = None
         
             # get policies
             self.policy = self.rl_alg.get_policy_network(self.networks['individual']) #get policy here
@@ -174,13 +180,20 @@ class Train():
 
                 
                 # exploration vs exploitation
-                #TODO:change to >
-                if self.currEp >= self.episodes_before_training : # can start training, exploitation
-                    action,_ = self.policy.get_action(state) 
-                else: # purely exploring
-                    #action, _= self.pop_policy.get_action(state, deterministic=False)
-                    action = np.random.uniform(-1,1, size=7) # this is for early designs
+                # keep stochasticity/noise so actions do not collapse to one extreme command
+                if self.currEp >= self.episodes_before_training:  # can start training, exploitation
+                    action, _ = self.policy.get_action(state)
+                else:  # purely exploring
+                    action = np.random.uniform(-1, 1, size=7)
 
+                action = np.asarray(action, dtype=np.float32)
+                action += np.random.normal(0.0, self.action_noise_std, size=action.shape)
+
+                if prev_action is not None and np.max(np.abs(action - prev_action)) < self.repeat_action_eps:
+                    action += np.random.normal(0.0, self.repeat_action_perturb_std, size=action.shape)
+
+                action = np.clip(action, -1.0, 1.0)
+                prev_action = action.copy()
 
                 num_logged_actions = min(len(self.actionList), len(action))
                 for i in range(num_logged_actions):
@@ -761,4 +774,3 @@ if __name__ == '__main__':
     optiThread.start() 
     trainingloopThread.start()
     trainingloopThread.join()
-

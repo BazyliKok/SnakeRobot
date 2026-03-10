@@ -126,12 +126,12 @@ class SnakeEnv(gymnasium.Env):
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype='float32')  # normalized actions
 
         # OptiTrack stream is in meters; this env scales position by *100.
-        # Targeting is currently X-based for termination/reward.
-        # Relative target from reset start: +18.5 env units (~185 mm).
-        self.targetDeltaX = 18.5
-        self.targetPositionX = 303.2  # overwritten on reset from current start
+        # Targeting is Z-based for termination/reward.
+        # target z = -900 mm -> env units -90.0 (position is meters * 100).
+        self.targetDistanceZ = 190.0  # overwritten on reset from observed start z
+        self.starting_position_z = None
         self.targetPositionY = 19.5231
-        self.targetPositionZ = -96.0
+        self.targetPositionZ = -90.0
         self._interactive_reset_default = self._read_interactive_reset_default()
 
                
@@ -214,22 +214,25 @@ class SnakeEnv(gymnasium.Env):
         SnakeEnv.optiXTrack.append(SnakeEnv.optiRelPos[0])  # global x position of robot
         SnakeEnv.optiYTrack.append(SnakeEnv.optiRelPos[2])  # global y position of robot
 
-        # extract X position
-        currXPos = nextObs[0]  # opti X position of the robot
+        # extract Z position from absolute observation (not delta)
+        currZPos = tmp_pos[2]  # opti Z position of the robot (absolute, env units)
 
         # # reward forward movement
         # reward = max([currXPos*0.05,0.]) * (.3- abs(nextObs[3]))  #(currXPos - self.prevPos)
         #print("global pos")
         #print(global_pos)
 
-        max_distance = max(abs(self.targetDeltaX), 1.0)
-        distance = abs(self.targetPositionX - currXPos)
+        max_distance = max(self.targetDistanceZ, 1.0)
+        distance = abs(self.targetPositionZ - currZPos)
         print("reward {}".format(np.exp(1 - (distance / max_distance))))
         reward = np.exp(1 - (distance / max_distance)) +  (.3- abs(nextObs[3]))
 
-        # check if the goal is reached (moving toward increasing X)
-        terminated = currXPos >= self.targetPositionX
-        print(f"Step check: currX={currXPos:.3f}, targetX={self.targetPositionX:.3f}, terminated={terminated}")
+        # check if the goal is reached along Z axis
+        if self.starting_position_z is not None and self.targetPositionZ < self.starting_position_z:
+            terminated = currZPos <= self.targetPositionZ
+        else:
+            terminated = currZPos >= self.targetPositionZ
+        print(f"Step check: currZ={currZPos:.3f}, targetZ={self.targetPositionZ:.3f}, terminated={terminated}")
 
         truncated = False
         info = {'info': 0}
@@ -240,7 +243,7 @@ class SnakeEnv(gymnasium.Env):
         self.df.loc[len(self.df.index)] = [actionForMotors, nextObs[0:7], nextObs[7:-1], reward]
 
         # update previous position and action
-        self.prevPos = currXPos
+        self.prevPos = currZPos
 
         # add design info to observation
 
@@ -295,6 +298,7 @@ class SnakeEnv(gymnasium.Env):
         # return current observation
         print("about to observe")  
         observation = self._get_obs(initial=True)
+        starting_z_abs = observation[2]
         # observation[0] = 0.
         observation[1] = 0.
         observation[2] = 0.
@@ -303,8 +307,9 @@ class SnakeEnv(gymnasium.Env):
 
         print('Observation: ', observation)
         self.starting_position = observation[0]
-        self.targetPositionX = self.starting_position + self.targetDeltaX
-        print(f"Episode target X set to {self.targetPositionX:.3f} (start {self.starting_position:.3f} + delta {self.targetDeltaX:.3f})")
+        self.starting_position_z = starting_z_abs
+        self.targetDistanceZ = abs(self.targetPositionZ - self.starting_position_z)
+        print(f"Episode target Z set to {self.targetPositionZ:.3f} (startZ {self.starting_position_z:.3f}, distance {self.targetDistanceZ:.3f})")
         self.prevPos = observation[0] # x position of observation
 
         self._prev_obs = copy.deepcopy(observation)
@@ -545,5 +550,4 @@ class SnakeEnv(gymnasium.Env):
         
 
     
-
 

@@ -145,7 +145,7 @@ class Optitrack:
         parser.add_argument('--quiet', action='store_true')
         self.args, _unknown = parser.parse_known_args()
 
-        self.target_rigid_body_id = 15
+        self.target_rigid_body_id = 16
 
         folder = 'mocap-data'
         file_path = './' + folder + '/' + file_extension
