@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--epsilon", type=float, default=1e-5, help="change threshold for stale detection")
     args, _ = parser.parse_known_args()
 
-    rigid_id = os.getenv("OPTITRACK_RIGID_BODY_ID", "<unset; first tracked body>")
+    rigid_id = 16
     print(f"Starting OptiTrack monitor. OPTITRACK_RIGID_BODY_ID={rigid_id}")
     print("Press Ctrl+C to stop.\n")
 
@@ -80,4 +80,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

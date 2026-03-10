@@ -39,7 +39,7 @@ class ClientApp(object):
 
     # optiData = attr.ib([])
     velocData = []
-    target_rigid_body_id = None
+    target_rigid_body_id = 16
     _last_target_missing_printed = 0
     
     @classmethod
