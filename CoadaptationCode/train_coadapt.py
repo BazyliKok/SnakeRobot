@@ -1,4 +1,4 @@
-﻿import json
+import json
 import gymnasium as gym
 import matplotlib.pyplot as plt
 from soft_actor_critic_coadapt import SoftActorCriticCoadapt
@@ -581,45 +581,92 @@ class Train():
 
 
 
+    def _serialize_replay_buffer(self, buffer):
+        return {
+            "observations": buffer._observations,
+            "actions": buffer._actions,
+            "rewards": buffer._rewards,
+            "terminals": buffer._terminals,
+            "next_observations": buffer._next_obs,
+            "env_infos": {key: value for key, value in buffer._env_infos.items()},
+            "env_info_keys": list(buffer._env_info_keys),
+            "_top": buffer._top,
+            "_size": buffer._size,
+            "_replace": buffer._replace,
+            "_max_replay_buffer_size": buffer._max_replay_buffer_size,
+            "_observation_dim": buffer._observation_dim,
+            "_action_dim": buffer._action_dim,
+        }
+
+    def _restore_replay_buffer(self, buffer, data):
+        buffer._observations = data["observations"]
+        buffer._actions = data["actions"]
+        buffer._rewards = data["rewards"]
+        buffer._terminals = data["terminals"]
+        buffer._next_obs = data["next_observations"]
+        buffer._env_infos = data.get("env_infos", buffer._env_infos)
+        buffer._env_info_keys = data.get("env_info_keys", list(buffer._env_infos.keys()))
+        buffer._top = data["_top"]
+        buffer._size = data["_size"]
+        buffer._replace = data.get("_replace", buffer._replace)
+        buffer._max_replay_buffer_size = data.get("_max_replay_buffer_size", buffer._max_replay_buffer_size)
+        buffer._observation_dim = data.get("_observation_dim", buffer._observation_dim)
+        buffer._action_dim = data.get("_action_dim", buffer._action_dim)
+
     def save_replay(self, filepath):
-        """Save replay buffer content to disk."""
+        """Save full coadaptation replay state to disk."""
 
         try:
-            buf = self.replay._individual_buffer
             data = {
-                "observations": buf._observations,
-                "actions": buf._actions,
-                "rewards": buf._rewards,
-                "terminals": buf._terminals,
-                "next_observations": buf._next_obs,
-                "_top": buf._top,
-                "_size": buf._size,
+                "version": 2,
+                "mode": self.replay._mode,
+                "ep_counter": self.replay._ep_counter,
+                "expect_init_state": self.replay._expect_init_state,
+                "individual_buffer": self._serialize_replay_buffer(self.replay._individual_buffer),
+                "population_buffer": self._serialize_replay_buffer(self.replay._population_buffer),
+                "init_state_buffer": self._serialize_replay_buffer(self.replay._init_state_buffer),
             }
             torch.save(data, filepath)
-            print(f"saved replay buffer to {filepath}")
+            print(
+                "saved replay buffers to {} (individual={}, population={}, init={})".format(
+                    filepath,
+                    self.replay._individual_buffer._size,
+                    self.replay._population_buffer._size,
+                    self.replay._init_state_buffer._size,
+                )
+            )
         except Exception as e:
             print(f"failed to save replay buffer: {e}")
 
     def load_replay(self, filepath):
-        """Load replay buffer content from disk."""
+        """Load full coadaptation replay state from disk."""
         try:
-            buf = self.replay._individual_buffer
             data = torch.load(filepath)
 
-            buf._observations = data["observations"]
-            buf._actions = data["actions"]
-            buf._rewards = data["rewards"]
-            buf._terminals = data["terminals"]
-            buf._next_obs = data["next_observations"]
-            buf._top = data["_top"]
-            buf._size = data["_size"]
+            if "individual_buffer" not in data:
+                # Backward-compatible fallback for older checkpoints that only
+                # stored the individual replay buffer.
+                self._restore_replay_buffer(self.replay._individual_buffer, data)
+                print(f"loaded legacy replay buffer from {filepath} with {self.replay._individual_buffer._size} samples")
+                return
 
-            print(f"loaded replay buffer from {filepath} with {buf._size} samples")
+            self._restore_replay_buffer(self.replay._individual_buffer, data["individual_buffer"])
+            self._restore_replay_buffer(self.replay._population_buffer, data["population_buffer"])
+            self._restore_replay_buffer(self.replay._init_state_buffer, data["init_state_buffer"])
+            self.replay._mode = data.get("mode", self.replay._mode)
+            self.replay._ep_counter = data.get("ep_counter", self.replay._ep_counter)
+            self.replay._expect_init_state = data.get("expect_init_state", self.replay._expect_init_state)
+
+            print(
+                "loaded replay buffers from {} (individual={}, population={}, init={})".format(
+                    filepath,
+                    self.replay._individual_buffer._size,
+                    self.replay._population_buffer._size,
+                    self.replay._init_state_buffer._size,
+                )
+            )
         except Exception as e:
             print(f"failed to load replay buffer: {e}")
-
-
-
 
     def logData(self):
         os.makedirs(os.path.dirname(self.filename) or '.', exist_ok=True)
