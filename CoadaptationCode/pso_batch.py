@@ -64,6 +64,46 @@ class PSO_batch(Design_Optimization):
 
         terrain_state_batches = _terrain_state_batches()
 
+        def _deterministic_actions(observation_tensor):
+            deterministic_forward = False
+            try:
+                policy_output = policy_network(observation_tensor, deterministic=True)
+                deterministic_forward = True
+            except TypeError:
+                policy_output = policy_network(observation_tensor)
+
+            if isinstance(policy_output, (tuple, list)):
+                if deterministic_forward and len(policy_output) > 0 and torch.is_tensor(policy_output[0]):
+                    return policy_output[0]
+                if len(policy_output) > 1 and torch.is_tensor(policy_output[1]):
+                    return torch.tanh(policy_output[1])
+                if len(policy_output) > 0 and torch.is_tensor(policy_output[0]):
+                    return policy_output[0]
+
+            normal_mean = getattr(policy_output, 'normal_mean', None)
+            if torch.is_tensor(normal_mean):
+                return torch.tanh(normal_mean)
+
+            mean_action = getattr(policy_output, 'mean', None)
+            if torch.is_tensor(mean_action):
+                if torch.max(torch.abs(mean_action)).item() > 1.0 + 1e-6:
+                    mean_action = torch.tanh(mean_action)
+                return mean_action
+
+            if hasattr(policy_network, 'get_action'):
+                actions = []
+                for obs in observation_tensor:
+                    obs_np = obs.detach().cpu().numpy()
+                    try:
+                        action, _ = policy_network.get_action(obs_np, deterministic=True)
+                    except TypeError:
+                        action, _ = policy_network.get_action(obs_np)
+                    actions.append(action)
+                return torch.as_tensor(np.asarray(actions), device=observation_tensor.device, dtype=torch.float32)
+
+            raise TypeError(f'Unsupported policy output type for deterministic PSO actions: {type(policy_output)}')
+
+
         def f_qval(x_input, **kwargs):  # function to optimize
             shape = x_input.shape
             cost = np.zeros((shape[0],))
@@ -76,11 +116,7 @@ class PSO_batch(Design_Optimization):
                         state_batch = _inject_design(terrain_state_batch, x_discrete)
 
                         network_input = torch.from_numpy(state_batch).to(device=ptu.device, dtype=torch.float32)
-                        action_dist = policy_network(network_input)
-                        if isinstance(action_dist, tuple):
-                            action = action_dist[0]
-                        else:
-                            action = action_dist.sample()
+                        action = _deterministic_actions(network_input)
                         output = q_network(network_input, action)
                         # J_t: predicted return for terrain t under candidate design.
                         terrain_returns.append(float(output.mean().item()))
