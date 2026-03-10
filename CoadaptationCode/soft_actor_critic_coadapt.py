@@ -266,6 +266,9 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             obs_dim=obs_dim,
             action_dim=action_dim,
         ).to(device=ptu.device)
+        # SAC target critics should start as exact copies of the online critics.
+        qf1_target.load_state_dict(qf1.state_dict())
+        qf2_target.load_state_dict(qf2.state_dict())
 
         print("obs dim number", obs_dim)
 
