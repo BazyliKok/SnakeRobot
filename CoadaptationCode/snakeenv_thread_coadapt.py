@@ -125,7 +125,13 @@ class SnakeEnv(gymnasium.Env):
         
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype='float32')  # normalized actions
 
-        self.targetPositionX = -100.0 # position that can't be reached, think about changing or getting rid of this
+        # OptiTrack stream is in meters; this env scales position by *100.
+        # Targeting is currently X-based for termination/reward.
+        # Relative target from reset start: +18.5 env units (~185 mm).
+        self.targetDeltaX = 18.5
+        self.targetPositionX = 303.2  # overwritten on reset from current start
+        self.targetPositionY = 19.5231
+        self.targetPositionZ = -96.0
         self._interactive_reset_default = self._read_interactive_reset_default()
 
                
@@ -216,13 +222,14 @@ class SnakeEnv(gymnasium.Env):
         #print("global pos")
         #print(global_pos)
 
-        max_distance = 40 #self.targetPositionX - ( 20) 
+        max_distance = max(abs(self.targetDeltaX), 1.0)
         distance = abs(self.targetPositionX - currXPos)
         print("reward {}".format(np.exp(1 - (distance / max_distance))))
         reward = np.exp(1 - (distance / max_distance)) +  (.3- abs(nextObs[3]))
 
-        # check if the goal is reached
-        terminated = currXPos < self.targetPositionX
+        # check if the goal is reached (moving toward increasing X)
+        terminated = currXPos >= self.targetPositionX
+        print(f"Step check: currX={currXPos:.3f}, targetX={self.targetPositionX:.3f}, terminated={terminated}")
 
         truncated = False
         info = {'info': 0}
@@ -296,6 +303,8 @@ class SnakeEnv(gymnasium.Env):
 
         print('Observation: ', observation)
         self.starting_position = observation[0]
+        self.targetPositionX = self.starting_position + self.targetDeltaX
+        print(f"Episode target X set to {self.targetPositionX:.3f} (start {self.starting_position:.3f} + delta {self.targetDeltaX:.3f})")
         self.prevPos = observation[0] # x position of observation
 
         self._prev_obs = copy.deepcopy(observation)
@@ -536,4 +545,5 @@ class SnakeEnv(gymnasium.Env):
         
 
     
+
 
