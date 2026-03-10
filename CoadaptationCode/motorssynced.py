@@ -317,7 +317,7 @@ if __name__ == '__main__':
     print(testMotors.readPos())
     testMotors.writePos([2025,2025,2025,2025,2025,2025,2025])
     time.sleep(5)
-    for i in range(1):
+    for i in range(10):
         testMotors.writePos([1080,3050,1080,3050,1080,3050,1080])
         time.sleep(.3)
         # print(testMotors.readVolt())

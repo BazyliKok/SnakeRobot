@@ -130,6 +130,8 @@ class SnakeEnv(gymnasium.Env):
         # target z = -900 mm -> env units -90.0 (position is meters * 100).
         self.targetDistanceZ = 190.0  # overwritten on reset from observed start z
         self.starting_position_z = None
+        self.starting_position_y = None
+        self.progress_direction_z = -1
         self.targetPositionY = 19.5231
         self.targetPositionZ = -90.0
         self._interactive_reset_default = self._read_interactive_reset_default()
@@ -148,6 +150,7 @@ class SnakeEnv(gymnasium.Env):
         self.reward = 0
         self.prevDist = 0
         self.prevPos = 0 
+        self.prevYpos = 0
 
         self.distList = []
         self.rewardList = []
@@ -224,8 +227,12 @@ class SnakeEnv(gymnasium.Env):
 
         max_distance = max(self.targetDistanceZ, 1.0)
         distance = abs(self.targetPositionZ - currZPos)
-        print("reward {}".format(np.exp(1 - (distance / max_distance))))
-        reward = np.exp(1 - (distance / max_distance)) +  (.3- abs(nextObs[3]))
+        prev_distance = abs(self.targetPositionZ - self.prevPos)
+
+        # Signed progress in the desired Z direction (toward target gets positive reward).
+        signed_delta_z = self.progress_direction_z * (currZPos - self.prevPos)
+        progress = (prev_distance - distance) / max_distance
+
 
         # check if the goal is reached along Z axis
         if self.starting_position_z is not None and self.targetPositionZ < self.starting_position_z:
@@ -233,6 +240,24 @@ class SnakeEnv(gymnasium.Env):
         else:
             terminated = currZPos >= self.targetPositionZ
         print(f"Step check: currZ={currZPos:.3f}, targetZ={self.targetPositionZ:.3f}, terminated={terminated}")
+
+        # Keep the body straight: penalize heading offset and Y drift from start line.
+        y_drift = abs(tmp_pos[1] - self.starting_position_y)
+        y_drift_penalty = min(y_drift / 25.0, 1.0)
+        heading_penalty = abs(nextObs[3])
+
+        # Penalize tiny/no progress so the policy does not settle into micro-motions.
+        stagnation_penalty = 0.05 if signed_delta_z < 0.15 else 0.0
+
+        reward = (1.2 * progress) + (0.35 * signed_delta_z) - (0.20 * y_drift_penalty) - (0.20 * heading_penalty) - stagnation_penalty
+        if terminated:
+            reward += 1.0
+        reward = float(np.clip(reward, -2.0, 2.0))
+        print(
+            f"reward components -> progress: {progress:.4f}, signed_delta_z: {signed_delta_z:.4f}, "
+            f"y_drift_penalty: {y_drift_penalty:.4f}, heading_penalty: {heading_penalty:.4f}, "
+            f"stagnation_penalty: {stagnation_penalty:.4f}"
+        )
 
         truncated = False
         info = {'info': 0}
@@ -299,6 +324,7 @@ class SnakeEnv(gymnasium.Env):
         print("about to observe")  
         observation = self._get_obs(initial=True)
         starting_z_abs = observation[2]
+        starting_y_abs = observation[0]
         # observation[0] = 0.
         observation[1] = 0.
         observation[2] = 0.
@@ -307,10 +333,16 @@ class SnakeEnv(gymnasium.Env):
 
         print('Observation: ', observation)
         self.starting_position = observation[0]
+        self.starting_position_y = starting_y_abs
         self.starting_position_z = starting_z_abs
+        self.progress_direction_z = -1.0 if self.targetPositionZ < self.starting_position_z else 1.0
         self.targetDistanceZ = abs(self.targetPositionZ - self.starting_position_z)
-        print(f"Episode target Z set to {self.targetPositionZ:.3f} (startZ {self.starting_position_z:.3f}, distance {self.targetDistanceZ:.3f})")
-        self.prevPos = observation[0] # x position of observation
+        print(
+            f"Episode target Z set to {self.targetPositionZ:.3f} (startZ {self.starting_position_z:.3f}, "
+            f"distance {self.targetDistanceZ:.3f}, direction {self.progress_direction_z:+.0f})"
+        )
+        self.prevPos = starting_z_abs
+        self.prevYPos = starting_y_abs
 
         self._prev_obs = copy.deepcopy(observation)
 
