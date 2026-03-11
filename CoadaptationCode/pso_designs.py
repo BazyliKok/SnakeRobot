@@ -9,14 +9,65 @@ from rlkit.torch.networks import FlattenMlp
 from rlkit.torch.sac.policies import TanhGaussianPolicy
 import rlkit.torch.pytorch_util as ptu
 
-ptu.set_gpu_mode(False) 
+ptu.set_gpu_mode(False)
+
+RESULT_TAGS = ("mixed_terrain", "carpet", "carton", "foam")
+
 
 def identity(x):
     return x
 
+
 # monkey patch for older rlkit compatibility
 import rlkit.torch.networks
 rlkit.torch.networks.identity = identity
+
+
+def _candidate_replay_paths(path):
+    yield path
+
+    basename = os.path.basename(path)
+    stem, ext = os.path.splitext(basename)
+    matched_tag = next((tag for tag in RESULT_TAGS if stem.endswith(f"_{tag}")), None)
+    base_stem = stem[:-(len(matched_tag) + 1)] if matched_tag else stem
+
+    for folder in ("results_bazyli", "replay"):
+        yield os.path.join(folder, basename)
+        if matched_tag is not None:
+            for tag in RESULT_TAGS:
+                yield os.path.join(folder, f"{base_stem}_{tag}{ext}")
+
+
+def _resolve_replay_path(path):
+    seen = set()
+    for candidate in _candidate_replay_paths(path):
+        normalized = os.path.normpath(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if os.path.exists(normalized):
+            return normalized
+    raise FileNotFoundError(f"Replay file not found for '{path}'. Tried: {sorted(seen)}")
+
+
+def _load_replay_buffer(path, preferred_buffer="population_buffer"):
+    resolved_path = _resolve_replay_path(path)
+    payload = torch.load(resolved_path, map_location=torch.device("cpu"))
+    if preferred_buffer in payload:
+        payload = payload[preferred_buffer]
+    elif "individual_buffer" in payload:
+        payload = payload["individual_buffer"]
+    return resolved_path, payload
+
+
+def _terrain_env_info(buffer_payload, index):
+    env_infos = buffer_payload.get("env_infos", {})
+    terrain_ids = env_infos.get("terrain_id")
+    if terrain_ids is None:
+        return {}
+    terrain_id = int(np.asarray(terrain_ids[index]).reshape(-1)[0])
+    return {"terrain_id": terrain_id}
+
 
 env = SnakeEnv()
 obs_dim = env.observation_space.low.size
@@ -50,19 +101,20 @@ REPLAY_PATHS = [
 print("Loading selected episodes into population buffer...")
 episode_length = 176
 for path in REPLAY_PATHS:
-    data = torch.load(path)
-    num_samples = data['_size']
+    resolved_path, replay_payload = _load_replay_buffer(path)
+    print(f"Loading replay: {resolved_path}")
+    num_samples = int(replay_payload.get('_size', len(replay_payload['observations'])))
     for ep in range(15, 31):
         start_idx = ep * episode_length
         end_idx = min((ep + 1) * episode_length, num_samples)
         for i in range(start_idx, end_idx):
             pop_replay.add_sample(
-                observation=data['observations'][i],
-                action=data['actions'][i],
-                reward=data['rewards'][i],
-                next_observation=data['next_observations'][i],
-                terminal=data['terminals'][i],
-                env_info={}
+                observation=replay_payload['observations'][i],
+                action=replay_payload['actions'][i],
+                reward=replay_payload['rewards'][i],
+                next_observation=replay_payload['next_observations'][i],
+                terminal=replay_payload['terminals'][i],
+                env_info=_terrain_env_info(replay_payload, i)
             )
 print("Done loading selected episodes.")
 
@@ -73,7 +125,7 @@ action_dim = env.action_space.low.size
 q_network = FlattenMlp(
     input_size=obs_dim + action_dim,
     output_size=1,
-    hidden_sizes=(256, 256, 256) 
+    hidden_sizes=(256, 256, 256)
 )
 
 policy_network = TanhGaussianPolicy(

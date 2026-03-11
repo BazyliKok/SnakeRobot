@@ -1,3 +1,4 @@
+import os
 import torch
 from SACTrainer import SACTrainer
 from soft_actor_critic_coadapt import SoftActorCriticCoadapt
@@ -20,6 +21,56 @@ class WrappedSnakeEnv(SnakeEnv):
             dtype=np.float32
         )
 
+
+RESULT_TAGS = ("mixed_terrain", "carpet", "carton", "foam")
+
+
+def _candidate_replay_paths(path):
+    yield path
+
+    basename = os.path.basename(path)
+    stem, ext = os.path.splitext(basename)
+    matched_tag = next((tag for tag in RESULT_TAGS if stem.endswith(f"_{tag}")), None)
+    base_stem = stem[:-(len(matched_tag) + 1)] if matched_tag else stem
+
+    for folder in ("results_bazyli", "replay"):
+        yield os.path.join(folder, basename)
+        if matched_tag is not None:
+            for tag in RESULT_TAGS:
+                yield os.path.join(folder, f"{base_stem}_{tag}{ext}")
+
+
+def _resolve_replay_path(path):
+    seen = set()
+    for candidate in _candidate_replay_paths(path):
+        normalized = os.path.normpath(candidate)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        if os.path.exists(normalized):
+            return normalized
+    raise FileNotFoundError(f"Replay file not found for '{path}'. Tried: {sorted(seen)}")
+
+
+def _load_replay_buffer(path, preferred_buffer="population_buffer"):
+    resolved_path = _resolve_replay_path(path)
+    payload = torch.load(resolved_path, map_location=torch.device("cpu"))
+    if preferred_buffer in payload:
+        payload = payload[preferred_buffer]
+    elif "individual_buffer" in payload:
+        payload = payload["individual_buffer"]
+    return resolved_path, payload
+
+
+def _terrain_env_info(buffer_payload, index):
+    env_infos = buffer_payload.get("env_infos", {})
+    terrain_ids = env_infos.get("terrain_id")
+    if terrain_ids is None:
+        return {}
+    terrain_id = int(np.asarray(terrain_ids[index]).reshape(-1)[0])
+    return {"terrain_id": terrain_id}
+
+
 ptu.set_gpu_mode(False)
 
 REPLAY_PATHS = [
@@ -38,7 +89,6 @@ REPLAY_PATHS = [
     "replay/replay_2025_06_16_Design5_carton.pt",
     "replay/replay_2025_06_18_Design5_carpet.pt",
     "replay/replay_2025_06_16_Design5_foam.pt",
-
 ]
 
 env = WrappedSnakeEnv(design_dim=4)
@@ -56,25 +106,26 @@ episode_length = 175
 design_dim = 4
 
 for path in REPLAY_PATHS:
-    data = torch.load(path)
-    num_samples = data['_size']
-    observations = data['observations']
-    actions = data['actions']
-    rewards = data['rewards']
-    next_obs = data['next_observations']
-    terminals = data['terminals']
+    resolved_path, replay_payload = _load_replay_buffer(path)
+    print(f"Loading replay: {resolved_path}")
+    num_samples = int(replay_payload.get('_size', len(replay_payload['observations'])))
+    observations = replay_payload['observations']
+    actions = replay_payload['actions']
+    rewards = replay_payload['rewards']
+    next_obs = replay_payload['next_observations']
+    terminals = replay_payload['terminals']
 
     for ep in range(17, 31):
         start = ep * episode_length
         end = min((ep + 1) * episode_length, num_samples)
         for i in range(start, end):
             pop_replay.add_sample(
-                observation=observations[i],          
+                observation=observations[i],
                 action=actions[i],
                 reward=rewards[i],
-                next_observation=next_obs[i],         
+                next_observation=next_obs[i],
                 terminal=terminals[i],
-                env_info={}
+                env_info=_terrain_env_info(replay_payload, i)
             )
 
 trainer = SoftActorCriticCoadapt(
@@ -87,8 +138,6 @@ trainer._replay.set_mode("population")
 trainer._nmbr_pop_updates = 500
 
 max_epochs = 500
-
-
 
 for epoch in range(max_epochs):
     print(f"\nEpoch {epoch + 1}")
