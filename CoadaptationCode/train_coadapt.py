@@ -39,7 +39,7 @@ class Train():
         self.training_terrain_block_size = 8
         self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size # number of episodes per design
         self.results_tag = 'mixed_terrain'
-        self.legacy_results_tags = [self.results_tag, 'carpet']
+        self.legacy_results_tags = [self.results_tag, 'carpet', 'carton', 'foam']
         self.terrain_name_to_id = {terrain: idx for idx, terrain in enumerate(self.terrain_sequence)}
         self.training_terrain_block_order = []
         self.training_episode_schedule = []
@@ -206,11 +206,17 @@ class Train():
         return terrain, terrain_id, block_idx, episode_in_block
 
     def _resolve_tagged_path(self, base_path, stem, extension):
-        for tag in self.legacy_results_tags:
-            candidate = os.path.join(base_path, f'{stem}_{tag}.{extension}')
+        tagged_candidates = [
+            os.path.join(base_path, f'{stem}_{tag}.{extension}')
+            for tag in self.legacy_results_tags
+        ]
+        untagged_candidate = os.path.join(base_path, f'{stem}.{extension}')
+
+        for candidate in tagged_candidates + [untagged_candidate]:
             if os.path.exists(candidate):
                 return candidate
-        return os.path.join(base_path, f'{stem}_{self.results_tag}.{extension}')
+
+        return tagged_candidates[0]
 
     def run(self, stopEvent, max_design_cycles_per_run=1):
         """ Runs Fast Evolution through Actor-Critic RL algorithm.
@@ -891,9 +897,22 @@ class Train():
 
             if "individual_buffer" not in data:
                 # Backward-compatible fallback for older checkpoints that only
-                # stored the individual replay buffer.
+                # stored one replay buffer. Mirror it into all buffers so
+                # resumed training and PSO can still sample population/start data.
                 self._restore_replay_buffer(self.replay._individual_buffer, data)
-                print(f"loaded legacy replay buffer from {filepath} with {self.replay._individual_buffer._size} samples")
+                self._restore_replay_buffer(self.replay._population_buffer, data)
+                self._restore_replay_buffer(self.replay._init_state_buffer, data)
+                self.replay._mode = data.get("mode", self.replay._mode)
+                self.replay._ep_counter = data.get("ep_counter", self.replay._ep_counter)
+                self.replay._expect_init_state = data.get("expect_init_state", self.replay._expect_init_state)
+                print(
+                    "loaded legacy replay buffer from {} (individual={}, population={}, init={})".format(
+                        filepath,
+                        self.replay._individual_buffer._size,
+                        self.replay._population_buffer._size,
+                        self.replay._init_state_buffer._size,
+                    )
+                )
                 return
 
             self._restore_replay_buffer(self.replay._individual_buffer, data["individual_buffer"])
