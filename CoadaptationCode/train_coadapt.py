@@ -58,6 +58,9 @@ class Train():
         self.action_noise_std = 0.10
         self.repeat_action_eps = 0.02
         self.repeat_action_perturb_std = 0.08
+        self.random_action_prob_start = 0.5
+        self.random_action_prob_decay = 0.02
+        self.random_action_prob_min = 0.1
 
         self.episodeCumulativeRewards = []  # Stores cumulative rewards per episode
         self.cumulativeRewards = []  # Stores cumulative rewards per step
@@ -97,6 +100,13 @@ class Train():
         if action_shape and len(action_shape) > 0:
             return action_shape[0]
         return 7
+
+    def _random_action_probability(self):
+        episode_idx = 0 if self.current_training_episode_in_block is None else int(self.current_training_episode_in_block)
+        return max(
+            self.random_action_prob_min,
+            self.random_action_prob_start - (self.random_action_prob_decay * episode_idx),
+        )
 
     def _stable_seed(self, *components):
         modulus = 2 ** 32
@@ -289,6 +299,8 @@ class Train():
             episodeContRewards = []
             Done = False
             prev_action = None
+            random_action_prob = self._random_action_probability()
+            print(f'episode random action probability: {random_action_prob:.3f}')
         
             # get policies
             self.policy = self.rl_alg.get_policy_network(self.networks['individual']) #get policy here
@@ -310,10 +322,14 @@ class Train():
                 
                 # exploration vs exploitation
                 # keep stochasticity/noise so actions do not collapse to one extreme command
-                if self.episode_counter > self.episodes_before_training:  # match training gate before switching to policy actions
+                use_policy_action = (
+                    self.episode_counter > self.episodes_before_training
+                    and np.random.rand() > random_action_prob
+                )
+                if use_policy_action:
                     action, _ = self.policy.get_action(state)
-                else:  # purely exploring
-                    action = np.random.uniform(-1, 1, size=7)
+                else:
+                    action = np.random.uniform(-1, 1, size=self._action_dim())
 
                 action = np.asarray(action, dtype=np.float32)
                 action += np.random.normal(0.0, self.action_noise_std, size=action.shape)
