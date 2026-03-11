@@ -779,6 +779,11 @@ class Train():
             'training_schedule_design_counter': self.training_schedule_design_counter,
             'training_terrain_block_size': self.training_terrain_block_size,
             'training_schedule_seed': self.current_schedule_seed,
+            'policy_action_warmup_episodes': self.policy_action_warmup_episodes,
+            'training_update_warmup_episodes': self.training_update_warmup_episodes,
+            'random_action_prob_start': self.random_action_prob_start,
+            'random_action_prob_decay': self.random_action_prob_decay,
+            'random_action_prob_min': self.random_action_prob_min,
         }
 
         with open(os.path.join(results_dir, f'{checkpoint_prefix}_metadata_{self.results_tag}.json'), 'w') as f:
@@ -843,6 +848,26 @@ class Train():
                 self.training_terrain_block_size,
             )
             self.current_schedule_seed = metadata.get('training_schedule_seed', self.current_schedule_seed)
+            self.policy_action_warmup_episodes = metadata.get(
+                'policy_action_warmup_episodes',
+                self.policy_action_warmup_episodes,
+            )
+            self.training_update_warmup_episodes = metadata.get(
+                'training_update_warmup_episodes',
+                self.training_update_warmup_episodes,
+            )
+            self.random_action_prob_start = metadata.get(
+                'random_action_prob_start',
+                self.random_action_prob_start,
+            )
+            self.random_action_prob_decay = metadata.get(
+                'random_action_prob_decay',
+                self.random_action_prob_decay,
+            )
+            self.random_action_prob_min = metadata.get(
+                'random_action_prob_min',
+                self.random_action_prob_min,
+            )
             self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size
             self._seed_global_rngs('resume', self.design_counter, self.episode_counter)
             print(f"restored design_counter={self.design_counter}, episode_counter={self.episode_counter}")
