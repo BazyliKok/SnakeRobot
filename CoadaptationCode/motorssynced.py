@@ -57,7 +57,7 @@ class MotorsSynced:
         self.LEN_PRES_VELOC                 = 4
         self.LEN_PRES_LOAD                  = 2
 
-        self.DEVICENAME                     = '/dev/ttyUSB1' # this changes with every device, in linux: '/dev/ttyUSB0'
+        self.DEVICENAME                     = '/dev/ttyUSB0' # this changes with every device, in linux: '/dev/ttyUSB0'
         self.portHandler                    = PortHandler(self.DEVICENAME)
         self.packetHandler                  = PacketHandler(self.PROTOCOL_VERSION)
 
@@ -317,7 +317,7 @@ if __name__ == '__main__':
     print(testMotors.readPos())
     testMotors.writePos([2025,2025,2025,2025,2025,2025,2025])
     time.sleep(5)
-    for i in range(10):
+    for i in range(5):
         testMotors.writePos([1080,3050,1080,3050,1080,3050,1080])
         time.sleep(.3)
         # print(testMotors.readVolt())

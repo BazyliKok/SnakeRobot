@@ -473,7 +473,7 @@ class SnakeEnv(gymnasium.Env):
         SnakeEnv.motors.writePos(posTo)
         SnakeEnv.motorLock.release()
 
-        time.sleep(.1) # sleep to allow motors to get to position
+        time.sleep(.3) # sleep to allow motors to get to position
 
 
     def getTorque(self):
