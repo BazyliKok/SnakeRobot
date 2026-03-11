@@ -68,7 +68,7 @@ class Train():
 
         self.num_init_designs = 7 # number of initial design cycles
         self.seed = int(os.getenv('SNAKE_EXPERIMENT_SEED', '12345'))
-        self.eval_episodes_per_terrain = int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '5'))
+        self.eval_episodes_per_terrain = max(1, int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '5')))
         self.eval_robustness_lambda = 0.5
         # set up replay
         self.replay = CoadaptReplayBuffer(
@@ -99,12 +99,13 @@ class Train():
         return 7
 
     def _stable_seed(self, *components):
-        modulus = (2 ** 32) - 1
+        modulus = 2 ** 32
         seed = int(self.seed) % modulus
         for component in components:
-            for char in str(component):
+            token = f'|{component!r}|'
+            for char in token:
                 seed = ((seed * 131) + ord(char)) % modulus
-        return int(seed or self.seed)
+        return int(seed)
 
     def _seed_global_rngs(self, *components):
         seed = self._stable_seed(*components)
@@ -620,7 +621,7 @@ class Train():
             for terrain, vals in terrain_lengths.items()
         }
         terrain_mean_success_steps = {
-            terrain: float(np.mean(vals)) if vals else float('nan')
+            terrain: (float(np.mean(vals)) if vals else None)
             for terrain, vals in terrain_success_steps.items()
         }
 
@@ -647,7 +648,7 @@ class Train():
         overall_min_eval_return = float(np.min(all_eval_returns))
         overall_mean_episode_length = float(np.mean(all_eval_lengths))
         overall_mean_success_steps = (
-            float(np.mean(all_success_steps)) if len(all_success_steps) > 0 else float('nan')
+            float(np.mean(all_success_steps)) if len(all_success_steps) > 0 else None
         )
 
         summary_row = {
@@ -710,7 +711,7 @@ class Train():
             f'{self.date}_Design{self.design_counter}_ep{self.episode_counter}_eval_summary.json'
         )
         with open(detail_json_path, 'w') as f:
-            json.dump(detail_payload, f, indent=2)
+            json.dump(detail_payload, f, indent=2, allow_nan=False)
 
         print('Evaluation summary:', summary_row)
        
