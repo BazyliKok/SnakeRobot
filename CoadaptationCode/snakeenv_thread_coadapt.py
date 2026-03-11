@@ -131,6 +131,8 @@ class SnakeEnv(gymnasium.Env):
         self.progress_direction_z = -1
         self.targetPositionY = 19.5231
         self.targetPositionZ = -90.0
+        self.x_drift_deadband = 5.0
+        self.x_drift_max = 60.0
         self._interactive_reset_default = self._read_interactive_reset_default()
 
                
@@ -179,6 +181,19 @@ class SnakeEnv(gymnasium.Env):
         normalized = 2.0 * (motor_positions - self.motorMin) / motor_span - 1.0
         return np.clip(normalized, -1.0, 1.0)
 
+    def _compute_x_drift(self, x_abs):
+        if self.starting_position_x is None:
+            return 0.0, 0.0, 0.0, 0.0
+
+        signed_x_drift = float(x_abs - self.starting_position_x)
+        abs_x_drift = abs(signed_x_drift)
+        x_drift_norm = float(np.clip(signed_x_drift / max(self.x_drift_max, 1.0), -1.0, 1.0))
+
+        penalty_span = max(self.x_drift_max - self.x_drift_deadband, 1.0)
+        penalized_drift = max(abs_x_drift - self.x_drift_deadband, 0.0)
+        x_drift_penalty = float(np.clip(penalized_drift / penalty_span, 0.0, 1.0))
+        return signed_x_drift, abs_x_drift, x_drift_norm, x_drift_penalty
+
     def _build_policy_observation(self, raw_observation):
         raw_observation = np.asarray(raw_observation, dtype=np.float32)
 
@@ -188,10 +203,7 @@ class SnakeEnv(gymnasium.Env):
         motor_positions_norm = self._normalize_motor_positions(raw_observation[4:])
 
         max_distance = max(float(self.targetDistanceZ), 1.0)
-        if self.starting_position_x is None:
-            x_drift_norm = 0.0
-        else:
-            x_drift_norm = float(np.clip((x_abs - self.starting_position_x) / 25.0, -1.0, 1.0))
+        _, _, x_drift_norm, _ = self._compute_x_drift(x_abs)
 
         if self.starting_position_z is None:
             z_progress_norm = 0.0
@@ -253,12 +265,14 @@ class SnakeEnv(gymnasium.Env):
         currZPos = tmp_pos[2]  # opti Z position of the robot (absolute, env units)
 
         max_distance = max(self.targetDistanceZ, 1.0)
-        distance = abs(self.targetPositionZ - currZPos)
-        prev_distance = abs(self.targetPositionZ - self.prevPos)
 
-        # Signed progress in the desired Z direction (toward target gets positive reward).
+        # Main reward term: current position relative to the episode start.
+        signed_progress_from_start = self.progress_direction_z * (currZPos - self.starting_position_z)
+        position_reward = float(np.clip(signed_progress_from_start / max_distance, -1.0, 1.0))
+
+        # Smaller shaping term: reward making forward progress this step.
         signed_delta_z = self.progress_direction_z * (currZPos - self.prevPos)
-        progress = (prev_distance - distance) / max_distance
+        step_reward = float(np.clip(signed_delta_z / 5.0, -1.0, 1.0))
 
         # check if the goal is reached along Z axis
         if self.starting_position_z is not None and self.targetPositionZ < self.starting_position_z:
@@ -268,21 +282,27 @@ class SnakeEnv(gymnasium.Env):
         print(f"Step check: currZ={currZPos:.3f}, targetZ={self.targetPositionZ:.3f}, terminated={terminated}")
 
         # Keep the body straight: penalize heading offset and sideways X drift.
-        x_drift = abs(tmp_pos[0] - self.starting_position_x)
-        x_drift_penalty = min(x_drift / 25.0, 1.0)
+        _, x_drift, _, x_drift_penalty = self._compute_x_drift(tmp_pos[0])
         heading_penalty = abs(tmp_pos[3])
 
         # Penalize tiny/no progress so the policy does not settle into micro-motions.
         stagnation_penalty = 0.05 if signed_delta_z < 0.15 else 0.0
 
-        reward = (1.2 * progress) + (0.35 * signed_delta_z) - (0.20 * x_drift_penalty) - (0.20 * heading_penalty) - stagnation_penalty
+        reward = (
+            (0.8 * position_reward)
+            + (0.2 * step_reward)
+            - (0.15 * x_drift_penalty)
+            - (0.15 * heading_penalty)
+            - stagnation_penalty
+        )
         if terminated:
             reward += 1.0
         reward = float(np.clip(reward, -2.0, 2.0))
         print(
-            f"reward components -> progress: {progress:.4f}, signed_delta_z: {signed_delta_z:.4f}, "
-            f"x_drift_penalty: {x_drift_penalty:.4f}, heading_penalty: {heading_penalty:.4f}, "
-            f"stagnation_penalty: {stagnation_penalty:.4f}"
+            f"reward components -> position_reward: {position_reward:.4f}, step_reward: {step_reward:.4f}, "
+            f"signed_progress_from_start: {signed_progress_from_start:.4f}, signed_delta_z: {signed_delta_z:.4f}, "
+            f"x_drift_cm: {x_drift:.4f}, x_drift_penalty: {x_drift_penalty:.4f}, "
+            f"heading_penalty: {heading_penalty:.4f}, stagnation_penalty: {stagnation_penalty:.4f}"
         )
 
         truncated = False
