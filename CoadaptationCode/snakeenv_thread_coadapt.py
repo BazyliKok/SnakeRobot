@@ -131,8 +131,9 @@ class SnakeEnv(gymnasium.Env):
         self.progress_direction_z = -1
         self.targetPositionY = 19.5231
         self.targetPositionZ = -90.0
-        self.x_drift_deadband = 5.0
-        self.x_drift_max = 60.0
+        self.x_drift_penalty_start = 15.0
+        self.x_drift_penalty_full = 80.0
+        self.x_drift_observation_scale = 80.0
         self._interactive_reset_default = self._read_interactive_reset_default()
 
                
@@ -187,11 +188,15 @@ class SnakeEnv(gymnasium.Env):
 
         signed_x_drift = float(x_abs - self.starting_position_x)
         abs_x_drift = abs(signed_x_drift)
-        x_drift_norm = float(np.clip(signed_x_drift / max(self.x_drift_max, 1.0), -1.0, 1.0))
+        x_drift_norm = float(
+            np.clip(signed_x_drift / max(self.x_drift_observation_scale, 1.0), -1.0, 1.0)
+        )
 
-        penalty_span = max(self.x_drift_max - self.x_drift_deadband, 1.0)
-        penalized_drift = max(abs_x_drift - self.x_drift_deadband, 0.0)
-        x_drift_penalty = float(np.clip(penalized_drift / penalty_span, 0.0, 1.0))
+        penalty_span = max(self.x_drift_penalty_full - self.x_drift_penalty_start, 1.0)
+        penalized_drift = max(abs_x_drift - self.x_drift_penalty_start, 0.0)
+        normalized_penalty = np.clip(penalized_drift / penalty_span, 0.0, 1.0)
+        # Make moderate head sway almost free and reserve strong penalties for clearly excessive drift.
+        x_drift_penalty = float(normalized_penalty ** 2)
         return signed_x_drift, abs_x_drift, x_drift_norm, x_drift_penalty
 
     def _build_policy_observation(self, raw_observation):
@@ -306,7 +311,14 @@ class SnakeEnv(gymnasium.Env):
         )
 
         truncated = False
-        info = {'info': 0}
+        info = {
+            'info': 0,
+            'position_reward': position_reward,
+            'step_reward': step_reward,
+            'x_drift_penalty': x_drift_penalty,
+            'heading_penalty': heading_penalty,
+            'stagnation_penalty': stagnation_penalty,
+        }
 
         print(f"Reward: {reward}")
 
