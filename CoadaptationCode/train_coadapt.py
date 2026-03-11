@@ -15,6 +15,7 @@ import os
 import utils
 import pickle
 import gc
+import random
 from pso_batch import PSO_batch
 import time
 import rlkit.torch.pytorch_util as ptu
@@ -47,6 +48,11 @@ class Train():
         self.current_training_terrain_id = -1
         self.current_training_block_index = -1
         self.current_training_episode_in_block = -1
+        self.current_schedule_seed = None
+        self._last_seed_context = None
+        self.current_episode_seed = None
+        self.current_update_seed = None
+        self.current_design_optimization_seed = None
 
         # Keep commands changing so the robot does not lock into one saturated pose.
         self.action_noise_std = 0.10
@@ -61,6 +67,9 @@ class Train():
         self.eachEpisodeCumuRewards = []
 
         self.num_init_designs = 7 # number of initial design cycles
+        self.seed = int(os.getenv('SNAKE_EXPERIMENT_SEED', '12345'))
+        self.eval_episodes_per_terrain = int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '5'))
+        self.eval_robustness_lambda = 0.5
         # set up replay
         self.replay = CoadaptReplayBuffer(
             max_replay_buffer_size_species=int(1e6),
@@ -68,6 +77,7 @@ class Train():
             env= self.env,
             env_info_sizes=None
         )
+        self._seed_global_rngs('initialization')
 
         # set up RL algorithm
         self.rl_method = SoftActorCriticCoadapt
@@ -81,14 +91,33 @@ class Train():
         
 
         self.date = datetime.now().strftime("%Y_%m_%d") # for files
-        self.eval_episodes_per_terrain = 3
-        self.eval_robustness_lambda = 0.5
         
     def _action_dim(self):
         action_shape = getattr(self.env.action_space, "shape", None)
         if action_shape and len(action_shape) > 0:
             return action_shape[0]
         return 7
+
+    def _stable_seed(self, *components):
+        modulus = (2 ** 32) - 1
+        seed = int(self.seed) % modulus
+        for component in components:
+            for char in str(component):
+                seed = ((seed * 131) + ord(char)) % modulus
+        return int(seed or self.seed)
+
+    def _seed_global_rngs(self, *components):
+        seed = self._stable_seed(*components)
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        self._last_seed_context = {
+            'seed': int(seed),
+            'components': [str(component) for component in components],
+        }
+        return int(seed)
 
     def _initialize_run_logs(self):
         self.stateList = []
@@ -115,7 +144,9 @@ class Train():
         self.lossFilename = self.date+name
 
     def _build_randomized_training_schedule(self):
-        terrain_block_order = list(np.random.permutation(self.terrain_sequence))
+        self.current_schedule_seed = self._stable_seed('terrain_schedule', self.design_counter)
+        schedule_rng = np.random.default_rng(self.current_schedule_seed)
+        terrain_block_order = list(schedule_rng.permutation(self.terrain_sequence))
         episode_schedule = []
         for terrain in terrain_block_order:
             episode_schedule.extend([terrain] * self.training_terrain_block_size)
@@ -231,6 +262,11 @@ class Train():
             self.current_training_terrain_id = terrain_idx
             self.current_training_block_index = block_idx
             self.current_training_episode_in_block = episode_in_block
+            self.current_episode_seed = self._seed_global_rngs(
+                'train_episode',
+                self.design_counter,
+                self.episode_counter,
+            )
             SnakeEnv.set_current_terrain(terrain)
             print(
                 f"CURRENT TERRAIN: {terrain} "
@@ -238,7 +274,7 @@ class Train():
                 f"episode {episode_in_block + 1}/{self.training_terrain_block_size}). "
                 f"Place robot on this terrain before continuing reset."
             )
-            state, info = self.env.reset()
+            state, info = self.env.reset(seed=self.current_episode_seed)
             state_dim = len(state)
             self.stateList = [[] for _ in range(state_dim)]
             steps = 0
@@ -362,7 +398,12 @@ class Train():
         print(f'design counter at {self.design_counter}')
         if self.design_counter == self.num_init_designs: # change this to mathc num init designs #SnakeEnv.get_number_of_init_designs: # if first time after init design loop
          
-            self.env.reset()
+            self.current_design_optimization_seed = self._seed_global_rngs(
+                'design_opt_bootstrap',
+                self.design_counter,
+                self.episode_counter,
+            )
+            self.env.reset(seed=self.current_design_optimization_seed)
             
             self.optimized_params = [0, 0, 0]
             # or can: self.optimized_params = SnakeEnv.get_random_design()
@@ -410,6 +451,11 @@ class Train():
         print(f'design counter at {self.design_counter}')
         if self.design_counter >= self.num_init_designs:
             self._data_design_type = 'Optimized'
+            self.current_design_optimization_seed = self._seed_global_rngs(
+                'design_opt',
+                self.design_counter,
+                self.episode_counter,
+            )
             q_network = self.rl_alg.get_q_network(self.networks['population'])
             policy_network = self.rl_alg.get_policy_network(self.networks['population'])
             self.cost, self.optimized_params = self.do_alg.optimize_design(design=self.optimized_params, q_network=q_network, policy_network=policy_network)
@@ -440,6 +486,11 @@ class Train():
         print('train single iteration check if counter > episodes before training')
         if self.episode_counter > self.episodes_before_training: # can start training, have filled buffer
             print('counter > episodes')
+            self.current_update_seed = self._seed_global_rngs(
+                'train_update',
+                self.design_counter,
+                self.episode_counter,
+            )
             q1loss, q2loss, policyloss, popq1loss, popq2loss, poppolicyloss = self.rl_alg.single_train_step(train_ind=True, train_pop=train_pop) # train one step
             
             #log data on lists
@@ -494,22 +545,39 @@ class Train():
           
     def evaluate_policy(self):
         """Evaluate deterministic policy performance across all terrains.
-        Runs multiple deterministic rollouts per terrain and stores a
-        per-design summary for robust cross-terrain comparison.
+        Runs repeated deterministic rollouts per terrain and records richer
+        return, success, and rollout-length statistics for each design.
         """
-        # can add a policy rollout here
         policy = self.rl_alg.get_policy_network(self.networks['individual'])
+        previous_terrain = SnakeEnv.get_current_terrain()
 
         terrain_returns = {}
+        terrain_lengths = {}
+        terrain_successes = {}
+        terrain_success_steps = {}
+        terrain_rollout_seeds = {}
+
         for terrain_idx, terrain in enumerate(self.terrain_sequence):
             SnakeEnv.set_current_terrain(terrain)
             episode_returns = []
+            episode_lengths = []
+            episode_successes = []
+            success_steps = []
+            rollout_seeds = []
 
-            for _ in range(self.eval_episodes_per_terrain):
-                state, _ = self.env.reset()
+            for rollout_idx in range(self.eval_episodes_per_terrain):
+                eval_seed = self._stable_seed(
+                    'eval_rollout',
+                    self.design_counter,
+                    terrain_idx,
+                    rollout_idx,
+                )
+                rollout_seeds.append(int(eval_seed))
+                state, _ = self.env.reset(seed=eval_seed)
                 done = False
                 steps = 0
                 cumulative_reward = 0.0
+                success = False
 
                 while (not done) and steps < self._episode_length:
                     try:
@@ -520,25 +588,72 @@ class Train():
                     next_state, reward, terminated, truncated, _ = self.env.step(action)
                     cumulative_reward += float(reward)
                     steps += 1
+                    success = success or bool(terminated)
                     done = terminated or truncated or (steps >= self._episode_length)
                     state = next_state
 
                 SnakeEnv.disableMotorTorque()
-                episode_returns.append(cumulative_reward)
+                episode_returns.append(float(cumulative_reward))
+                episode_lengths.append(int(steps))
+                episode_successes.append(int(success))
+                if success:
+                    success_steps.append(int(steps))
 
             terrain_returns[terrain] = episode_returns
+            terrain_lengths[terrain] = episode_lengths
+            terrain_successes[terrain] = episode_successes
+            terrain_success_steps[terrain] = success_steps
+            terrain_rollout_seeds[terrain] = rollout_seeds
+
+        SnakeEnv.set_current_terrain(previous_terrain)
 
         terrain_means = {terrain: float(np.mean(vals)) for terrain, vals in terrain_returns.items()}
         terrain_std = {terrain: float(np.std(vals)) for terrain, vals in terrain_returns.items()}
+        terrain_medians = {terrain: float(np.median(vals)) for terrain, vals in terrain_returns.items()}
+        terrain_mins = {terrain: float(np.min(vals)) for terrain, vals in terrain_returns.items()}
+        terrain_success_rates = {
+            terrain: float(np.mean(vals)) if vals else 0.0
+            for terrain, vals in terrain_successes.items()
+        }
+        terrain_mean_lengths = {
+            terrain: float(np.mean(vals)) if vals else 0.0
+            for terrain, vals in terrain_lengths.items()
+        }
+        terrain_mean_success_steps = {
+            terrain: float(np.mean(vals)) if vals else float('nan')
+            for terrain, vals in terrain_success_steps.items()
+        }
 
         mean_return_per_terrain = np.array(list(terrain_means.values()), dtype=np.float32)
+        all_eval_returns = np.array(
+            [ret for returns in terrain_returns.values() for ret in returns],
+            dtype=np.float32,
+        )
+        all_eval_lengths = np.array(
+            [length for lengths in terrain_lengths.values() for length in lengths],
+            dtype=np.float32,
+        )
+        all_success_steps = np.array(
+            [step for steps in terrain_success_steps.values() for step in steps],
+            dtype=np.float32,
+        )
         mean_return = float(np.mean(mean_return_per_terrain))
         worst_terrain_return = float(np.min(mean_return_per_terrain))
         std_across_terrains = float(np.std(mean_return_per_terrain))
         robustness_score = float(mean_return - self.eval_robustness_lambda * std_across_terrains)
+        mean_success_rate = float(np.mean(list(terrain_success_rates.values())))
+        worst_success_rate = float(np.min(list(terrain_success_rates.values())))
+        overall_median_eval_return = float(np.median(all_eval_returns))
+        overall_min_eval_return = float(np.min(all_eval_returns))
+        overall_mean_episode_length = float(np.mean(all_eval_lengths))
+        overall_mean_success_steps = (
+            float(np.mean(all_success_steps)) if len(all_success_steps) > 0 else float('nan')
+        )
 
         summary_row = {
             'Date': self.date,
+            'Experiment_Seed': int(self.seed),
+            'Training_Schedule_Seed': int(self.current_schedule_seed) if self.current_schedule_seed is not None else None,
             'Design_Counter': int(self.design_counter),
             'Episode_Counter': int(self.episode_counter),
             'Scale_Head': int(SnakeEnv.get_current_design()[0]),
@@ -551,6 +666,12 @@ class Train():
             'Mean_Return': mean_return,
             'Std_Across_Terrains': std_across_terrains,
             'Worst_Terrain_Return': worst_terrain_return,
+            'Mean_Success_Rate': mean_success_rate,
+            'Worst_Terrain_Success_Rate': worst_success_rate,
+            'Overall_Median_Eval_Return': overall_median_eval_return,
+            'Overall_Min_Eval_Return': overall_min_eval_return,
+            'Overall_Mean_Episode_Length': overall_mean_episode_length,
+            'Overall_Mean_Success_Steps': overall_mean_success_steps,
             'Overall_Mean_Return': mean_return,
             'Std_Across_Terrain_Means': std_across_terrains,
             'Robustness_Lambda': float(self.eval_robustness_lambda),
@@ -560,6 +681,11 @@ class Train():
         for terrain in self.terrain_sequence:
             summary_row[f'{terrain}_Mean_Return'] = terrain_means[terrain]
             summary_row[f'{terrain}_Std_Return'] = terrain_std[terrain]
+            summary_row[f'{terrain}_Median_Return'] = terrain_medians[terrain]
+            summary_row[f'{terrain}_Min_Return'] = terrain_mins[terrain]
+            summary_row[f'{terrain}_Success_Rate'] = terrain_success_rates[terrain]
+            summary_row[f'{terrain}_Mean_Episode_Length'] = terrain_mean_lengths[terrain]
+            summary_row[f'{terrain}_Mean_Success_Steps'] = terrain_mean_success_steps[terrain]
 
         results_dir = 'results_bazyli'
         os.makedirs(results_dir, exist_ok=True)
@@ -574,6 +700,10 @@ class Train():
         detail_payload = {
             'summary': summary_row,
             'terrain_episode_returns': terrain_returns,
+            'terrain_episode_lengths': terrain_lengths,
+            'terrain_episode_successes': terrain_successes,
+            'terrain_success_steps': terrain_success_steps,
+            'terrain_rollout_seeds': terrain_rollout_seeds,
         }
         detail_json_path = os.path.join(
             results_dir,
@@ -608,6 +738,7 @@ class Train():
 
         
         metadata = {
+            'seed': int(self.seed),
             'design_counter': self.design_counter,
             'episode_counter': self.episode_counter,
             'optimized_params': getattr(self, 'optimized_params', None),
@@ -615,6 +746,7 @@ class Train():
             'training_episode_schedule': list(self.training_episode_schedule),
             'training_schedule_design_counter': self.training_schedule_design_counter,
             'training_terrain_block_size': self.training_terrain_block_size,
+            'training_schedule_seed': self.current_schedule_seed,
         }
 
         with open(os.path.join(results_dir, f'{checkpoint_prefix}_metadata_{self.results_tag}.json'), 'w') as f:
@@ -664,6 +796,7 @@ class Train():
         if os.path.exists(metadata_path):
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
+            self.seed = int(metadata.get('seed', self.seed))
             self.design_counter = metadata['design_counter']
             self.episode_counter = metadata['episode_counter']
             self.optimized_params = metadata.get('optimized_params', None)
@@ -677,7 +810,9 @@ class Train():
                 'training_terrain_block_size',
                 self.training_terrain_block_size,
             )
+            self.current_schedule_seed = metadata.get('training_schedule_seed', self.current_schedule_seed)
             self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size
+            self._seed_global_rngs('resume', self.design_counter, self.episode_counter)
             print(f"restored design_counter={self.design_counter}, episode_counter={self.episode_counter}")
         else:
             print("no metadata file found; counters not restored.")
@@ -805,6 +940,8 @@ class Train():
         rewardDF['Cumulative_Rewards'] = self.cumulativeRewards
         rewardDF['Terrain'] = [SnakeEnv.get_current_terrain()] * len(self.timesteps)
         design = SnakeEnv.get_current_design()
+        rewardDF['Experiment_Seed'] = [int(self.seed)] * len(self.timesteps)
+        rewardDF['Episode_Seed'] = [self.current_episode_seed] * len(self.timesteps)
         rewardDF['Terrain_ID'] = [self.current_training_terrain_id] * len(self.timesteps)
         rewardDF['Terrain_Block_Index'] = [self.current_training_block_index] * len(self.timesteps)
         rewardDF['Episode_In_Terrain_Block'] = [self.current_training_episode_in_block] * len(self.timesteps)
