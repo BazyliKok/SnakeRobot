@@ -33,7 +33,8 @@ class Train():
         self.optimized_params = None
         self._episode_length = 150 # number of timesteps per episode
         self.episode_counter = None
-        self.episodes_before_training = 0 #4 # number of episodes before training to fill the replay buffer
+        self.policy_action_warmup_episodes = 0  # full-random episodes before policy/random mixing starts
+        self.training_update_warmup_episodes = 1  # collected episodes before SAC updates start
         self.design_cylces = 20 # total number of design cycles
         self.terrain_sequence = list(SnakeEnv.terrains)
         self.training_terrain_block_size = 8
@@ -58,7 +59,7 @@ class Train():
         self.action_noise_std = 0.10
         self.repeat_action_eps = 0.02
         self.repeat_action_perturb_std = 0.08
-        self.random_action_prob_start = 0.5
+        self.random_action_prob_start = 0.3
         self.random_action_prob_decay = 0.02
         self.random_action_prob_min = 0.1
 
@@ -107,6 +108,14 @@ class Train():
             self.random_action_prob_min,
             self.random_action_prob_start - (self.random_action_prob_decay * episode_idx),
         )
+
+    def _should_use_policy_actions(self):
+        episode_idx = 0 if self.episode_counter is None else int(self.episode_counter)
+        return episode_idx >= self.policy_action_warmup_episodes
+
+    def _should_train_updates(self):
+        episode_idx = 0 if self.episode_counter is None else int(self.episode_counter)
+        return episode_idx >= self.training_update_warmup_episodes
 
     def _stable_seed(self, *components):
         modulus = 2 ** 32
@@ -323,7 +332,7 @@ class Train():
                 # exploration vs exploitation
                 # keep stochasticity/noise so actions do not collapse to one extreme command
                 use_policy_action = (
-                    self.episode_counter > self.episodes_before_training
+                    self._should_use_policy_actions()
                     and np.random.rand() > random_action_prob
                 )
                 if use_policy_action:
@@ -506,9 +515,9 @@ class Train():
         else:
             train_pop = False
         
-        print('train single iteration check if counter > episodes before training')
-        if self.episode_counter > self.episodes_before_training: # can start training, have filled buffer
-            print('counter > episodes')
+        print('train single iteration check if training warmup is complete')
+        if self._should_train_updates():  # can start training after enough full episodes are collected
+            print('training warmup complete')
             self.current_update_seed = self._seed_global_rngs(
                 'train_update',
                 self.design_counter,
