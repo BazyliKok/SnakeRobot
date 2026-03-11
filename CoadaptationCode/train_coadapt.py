@@ -834,34 +834,78 @@ class Train():
 
 
     def _serialize_replay_buffer(self, buffer):
+        active_size = int(buffer._size)
+        max_size = int(buffer._max_replay_buffer_size)
+
+        if active_size <= 0:
+            active_indices = np.array([], dtype=np.int64)
+        elif active_size < max_size and buffer._top == active_size:
+            active_indices = np.arange(active_size, dtype=np.int64)
+        else:
+            start = (buffer._top - active_size) % max_size
+            if start < buffer._top:
+                active_indices = np.arange(start, buffer._top, dtype=np.int64)
+            else:
+                active_indices = np.concatenate([
+                    np.arange(start, max_size, dtype=np.int64),
+                    np.arange(0, buffer._top, dtype=np.int64),
+                ])
+
         return {
-            "observations": buffer._observations,
-            "actions": buffer._actions,
-            "rewards": buffer._rewards,
-            "terminals": buffer._terminals,
-            "next_observations": buffer._next_obs,
-            "env_infos": {key: value for key, value in buffer._env_infos.items()},
+            "observations": buffer._observations[active_indices].copy(),
+            "actions": buffer._actions[active_indices].copy(),
+            "rewards": buffer._rewards[active_indices].copy(),
+            "terminals": buffer._terminals[active_indices].copy(),
+            "next_observations": buffer._next_obs[active_indices].copy(),
+            "env_infos": {
+                key: value[active_indices].copy()
+                for key, value in buffer._env_infos.items()
+            },
             "env_info_keys": list(buffer._env_info_keys),
-            "_top": buffer._top,
-            "_size": buffer._size,
+            "_top": active_size % max_size if max_size else 0,
+            "_size": active_size,
             "_replace": buffer._replace,
-            "_max_replay_buffer_size": buffer._max_replay_buffer_size,
+            "_max_replay_buffer_size": max_size,
             "_observation_dim": buffer._observation_dim,
             "_action_dim": buffer._action_dim,
         }
 
     def _restore_replay_buffer(self, buffer, data):
-        buffer._observations = data["observations"]
-        buffer._actions = data["actions"]
-        buffer._rewards = data["rewards"]
-        buffer._terminals = data["terminals"]
-        buffer._next_obs = data["next_observations"]
-        buffer._env_infos = data.get("env_infos", buffer._env_infos)
-        buffer._env_info_keys = data.get("env_info_keys", list(buffer._env_infos.keys()))
-        buffer._top = data["_top"]
-        buffer._size = data["_size"]
+        max_size = int(data.get("_max_replay_buffer_size", buffer._max_replay_buffer_size))
+        size = int(data.get("_size", 0))
+
+        buffer._observations = np.zeros((max_size, buffer._observation_dim))
+        buffer._actions = np.zeros((max_size, buffer._action_dim))
+        buffer._rewards = np.zeros((max_size, 1))
+        buffer._terminals = np.zeros((max_size, 1), dtype='uint8')
+        buffer._next_obs = np.zeros((max_size, buffer._observation_dim))
+
+        saved_env_infos = data.get("env_infos", {})
+        buffer._env_info_keys = data.get("env_info_keys", list(saved_env_infos.keys()))
+        buffer._env_infos = {}
+        for key in buffer._env_info_keys:
+            saved_values = saved_env_infos.get(key)
+            if saved_values is None:
+                buffer._env_infos[key] = np.zeros((max_size, 1))
+            else:
+                width = saved_values.shape[1] if saved_values.ndim > 1 else 1
+                buffer._env_infos[key] = np.zeros((max_size, width), dtype=saved_values.dtype)
+
+        if size > 0:
+            buffer._observations[:size] = data["observations"][:size]
+            buffer._actions[:size] = data["actions"][:size]
+            buffer._rewards[:size] = data["rewards"][:size]
+            buffer._terminals[:size] = data["terminals"][:size]
+            buffer._next_obs[:size] = data["next_observations"][:size]
+            for key in buffer._env_info_keys:
+                saved_values = saved_env_infos.get(key)
+                if saved_values is not None:
+                    buffer._env_infos[key][:size] = saved_values[:size]
+
+        buffer._top = size % max_size if max_size else 0
+        buffer._size = size
         buffer._replace = data.get("_replace", buffer._replace)
-        buffer._max_replay_buffer_size = data.get("_max_replay_buffer_size", buffer._max_replay_buffer_size)
+        buffer._max_replay_buffer_size = max_size
         buffer._observation_dim = data.get("_observation_dim", buffer._observation_dim)
         buffer._action_dim = data.get("_action_dim", buffer._action_dim)
 
