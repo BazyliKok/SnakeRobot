@@ -19,7 +19,7 @@ from datetime import datetime
 gymnasium.envs.register(
     id = "SnakeRobot",
     entry_point = f"{__name__}:SnakeEnv",
-    max_episode_steps = 150,  # maybe come back and change
+    max_episode_steps = 250,  # maybe come back and change
     reward_threshold = 1000,
     
 )
