@@ -57,7 +57,7 @@ class MotorsSynced:
         self.LEN_PRES_VELOC                 = 4
         self.LEN_PRES_LOAD                  = 2
 
-        self.DEVICENAME                     = '/dev/ttyUSB0' # this changes with every device, in linux: '/dev/ttyUSB0'
+        self.DEVICENAME                     = '/dev/ttyUSB1' # this changes with every device, in linux: '/dev/ttyUSB0'
         self.portHandler                    = PortHandler(self.DEVICENAME)
         self.packetHandler                  = PacketHandler(self.PROTOCOL_VERSION)
 
