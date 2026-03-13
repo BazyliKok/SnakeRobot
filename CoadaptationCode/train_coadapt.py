@@ -155,11 +155,12 @@ class Train():
         self.popq1loss = []
         self.popq2loss = []
         self.poppolicyloss = []
-        self.positionRewardComponents = []
-        self.stepRewardComponents = []
+        self.progressRewardComponents = []
+        self.distanceProgressCmComponents = []
         self.xDriftPenaltyComponents = []
         self.headingPenaltyComponents = []
-        self.stagnationPenaltyComponents = []
+        self.noProgressPenaltyComponents = []
+        self.backwardPenaltyComponents = []
 
     def _set_output_filenames(self):
         self.date = datetime.now().strftime("%Y_%m_%d")
@@ -290,11 +291,12 @@ class Train():
             self.cumulativeRewards = []
             self.epList = []
             self.timesteps = []
-            self.positionRewardComponents = []
-            self.stepRewardComponents = []
+            self.progressRewardComponents = []
+            self.distanceProgressCmComponents = []
             self.xDriftPenaltyComponents = []
             self.headingPenaltyComponents = []
-            self.stagnationPenaltyComponents = []
+            self.noProgressPenaltyComponents = []
+            self.backwardPenaltyComponents = []
 
             # reset environment
             terrain, terrain_idx, block_idx, episode_in_block = self._get_training_terrain_for_episode(self.episode_counter)
@@ -378,11 +380,12 @@ class Train():
                 self.timestepRewards.append(reward)
                 self.cumulativeRewards.append(episodeRewards)
                 self.epList.append(self.currEp) # to make note of what episode we are on
-                self.positionRewardComponents.append(float(info.get('position_reward', np.nan)))
-                self.stepRewardComponents.append(float(info.get('step_reward', np.nan)))
+                self.progressRewardComponents.append(float(info.get('progress_reward', np.nan)))
+                self.distanceProgressCmComponents.append(float(info.get('distance_progress_cm', np.nan)))
                 self.xDriftPenaltyComponents.append(float(info.get('x_drift_penalty', np.nan)))
                 self.headingPenaltyComponents.append(float(info.get('heading_penalty', np.nan)))
-                self.stagnationPenaltyComponents.append(float(info.get('stagnation_penalty', np.nan)))
+                self.noProgressPenaltyComponents.append(float(info.get('no_progress_penalty', info.get('stagnation_penalty', np.nan))))
+                self.backwardPenaltyComponents.append(float(info.get('backward_penalty', np.nan)))
                 for i in range(len(state)): #was 17
                     self.stateList[i].append(state[i])
 
@@ -1055,11 +1058,12 @@ class Train():
         self.timesteps = self.timesteps[:min_len]
         self.timestepRewards = self.timestepRewards[:min_len]
         self.cumulativeRewards = self.cumulativeRewards[:min_len]
-        self.positionRewardComponents = self.positionRewardComponents[:min_len]
-        self.stepRewardComponents = self.stepRewardComponents[:min_len]
+        self.progressRewardComponents = self.progressRewardComponents[:min_len]
+        self.distanceProgressCmComponents = self.distanceProgressCmComponents[:min_len]
         self.xDriftPenaltyComponents = self.xDriftPenaltyComponents[:min_len]
         self.headingPenaltyComponents = self.headingPenaltyComponents[:min_len]
-        self.stagnationPenaltyComponents = self.stagnationPenaltyComponents[:min_len]
+        self.noProgressPenaltyComponents = self.noProgressPenaltyComponents[:min_len]
+        self.backwardPenaltyComponents = self.backwardPenaltyComponents[:min_len]
         xPositionList = xPositionList[-min_len:]
         yPositionList = yPositionList[-min_len:]
         self.epList = self.epList[:min_len]
@@ -1076,11 +1080,12 @@ class Train():
         rewardDF['Y_Position']= yPositionList # added this, need to see if it works
         rewardDF['Rewards'] = self.timestepRewards
         rewardDF['Cumulative_Rewards'] = self.cumulativeRewards
-        rewardDF['Position_Reward'] = self.positionRewardComponents
-        rewardDF['Step_Reward'] = self.stepRewardComponents
+        rewardDF['Progress_Reward'] = self.progressRewardComponents
+        rewardDF['Distance_Progress_Cm'] = self.distanceProgressCmComponents
         rewardDF['X_Drift_Penalty'] = self.xDriftPenaltyComponents
         rewardDF['Heading_Penalty'] = self.headingPenaltyComponents
-        rewardDF['Stagnation_Penalty'] = self.stagnationPenaltyComponents
+        rewardDF['No_Progress_Penalty'] = self.noProgressPenaltyComponents
+        rewardDF['Backward_Penalty'] = self.backwardPenaltyComponents
         rewardDF['Terrain'] = [SnakeEnv.get_current_terrain()] * len(self.timesteps)
         design = SnakeEnv.get_current_design()
         rewardDF['Experiment_Seed'] = [int(self.seed)] * len(self.timesteps)

@@ -136,8 +136,12 @@ class SnakeEnv(gymnasium.Env):
         self.x_drift_observation_scale = 80.0
         self.step_reward_deadzone_cm = 1.0
         self.meaningful_step_cm = 3.0
-        self.stagnation_threshold_cm = 1.0
-        self.max_stagnation_penalty = 0.12
+        self.idle_step_penalty = 0.03
+        self.backward_step_penalty_scale = 0.25
+        self.backward_progress_deadzone_cm = 0.5
+        self.terminal_reward_bonus = 5.0
+        self.reward_clip_min = -3.0
+        self.reward_clip_max = 5.0
         self._interactive_reset_default = self._read_interactive_reset_default()
 
                
@@ -274,17 +278,14 @@ class SnakeEnv(gymnasium.Env):
         currZPos = tmp_pos[2]  # opti Z position of the robot (absolute, env units)
 
         max_distance = max(self.targetDistanceZ, 1.0)
+        # Reward actual progress toward the target on this step.
+        prev_distance_to_goal = abs(self.targetPositionZ - self.prevPos)
+        curr_distance_to_goal = abs(self.targetPositionZ - currZPos)
+        distance_progress_cm = prev_distance_to_goal - curr_distance_to_goal
 
-        # Main reward term: current position relative to the episode start.
-        signed_progress_from_start = self.progress_direction_z * (currZPos - self.starting_position_z)
-        position_reward = float(np.clip(signed_progress_from_start / max_distance, -1.0, 1.0))
-
-        # Only reward step progress once it clears a small deadzone so
-        # tiny wiggles are not reinforced as useful locomotion.
-        signed_delta_z = self.progress_direction_z * (currZPos - self.prevPos)
         step_reward_scale = max(self.meaningful_step_cm - self.step_reward_deadzone_cm, 1e-6)
-        step_reward = float(
-            np.clip((signed_delta_z - self.step_reward_deadzone_cm) / step_reward_scale, -1.0, 1.0)
+        progress_reward = float(
+            np.clip((distance_progress_cm - self.step_reward_deadzone_cm) / step_reward_scale, 0.0, 1.0)
         )
 
         # check if the goal is reached along Z axis
@@ -298,41 +299,47 @@ class SnakeEnv(gymnasium.Env):
         _, x_drift, _, x_drift_penalty = self._compute_x_drift(tmp_pos[0])
         heading_penalty = abs(tmp_pos[3])
 
-        # Penalize sub-threshold forward motion so creeping in place is worse
-        # than committing to a meaningful step.
-        progress_shortfall = max(self.stagnation_threshold_cm - signed_delta_z, 0.0)
-        stagnation_penalty = float(
-            np.clip(progress_shortfall / max(self.stagnation_threshold_cm, 1e-6), 0.0, 1.0)
-            * self.max_stagnation_penalty
+        # Standing still should be slightly bad, and moving away from the goal
+        # should be worse than simply failing to progress.
+        no_progress_penalty = self.idle_step_penalty if distance_progress_cm < self.step_reward_deadzone_cm else 0.0
+        backward_progress_cm = max(-distance_progress_cm - self.backward_progress_deadzone_cm, 0.0)
+        backward_penalty = float(
+            np.clip(backward_progress_cm / max(self.meaningful_step_cm, 1e-6), 0.0, 1.0)
+            * self.backward_step_penalty_scale
         )
 
         reward = (
-            (0.75 * position_reward)
-            + (0.25 * step_reward)
-            - (0.15 * x_drift_penalty)
-            - (0.15 * heading_penalty)
-            - stagnation_penalty
+            progress_reward
+            - no_progress_penalty
+            - backward_penalty
+            - (0.10 * x_drift_penalty)
+            - (0.10 * heading_penalty)
         )
         if terminated:
-            reward += 1.0
-        reward = float(np.clip(reward, -2.0, 2.0))
+            reward += self.terminal_reward_bonus
+        reward = float(np.clip(reward, self.reward_clip_min, self.reward_clip_max))
         print(
-            f"reward components -> position_reward: {position_reward:.4f}, step_reward: {step_reward:.4f}, "
-            f"signed_progress_from_start: {signed_progress_from_start:.4f}, signed_delta_z: {signed_delta_z:.4f}, "
+            f"reward components -> progress_reward: {progress_reward:.4f}, "
+            f"distance_progress_cm: {distance_progress_cm:.4f}, "
+            f"prev_distance_to_goal: {prev_distance_to_goal:.4f}, curr_distance_to_goal: {curr_distance_to_goal:.4f}, "
             f"x_drift_cm: {x_drift:.4f}, x_drift_penalty: {x_drift_penalty:.4f}, "
-            f"heading_penalty: {heading_penalty:.4f}, stagnation_penalty: {stagnation_penalty:.4f}"
+            f"heading_penalty: {heading_penalty:.4f}, no_progress_penalty: {no_progress_penalty:.4f}, "
+            f"backward_penalty: {backward_penalty:.4f}"
         )
 
         truncated = False
         info = {
             'info': 0,
-            'position_reward': position_reward,
-            'step_reward': step_reward,
+            'progress_reward': progress_reward,
+            'distance_progress_cm': distance_progress_cm,
+            'step_reward': progress_reward,
             'x_drift_penalty': x_drift_penalty,
             'heading_penalty': heading_penalty,
-            'stagnation_penalty': stagnation_penalty,
-            'signed_delta_z': signed_delta_z,
-            'progress_shortfall_cm': progress_shortfall,
+            'no_progress_penalty': no_progress_penalty,
+            'backward_penalty': backward_penalty,
+            'stagnation_penalty': no_progress_penalty,
+            'prev_distance_to_goal': prev_distance_to_goal,
+            'curr_distance_to_goal': curr_distance_to_goal,
         }
 
         print(f"Reward: {reward}")
