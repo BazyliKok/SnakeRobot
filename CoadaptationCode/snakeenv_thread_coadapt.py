@@ -134,6 +134,10 @@ class SnakeEnv(gymnasium.Env):
         self.x_drift_penalty_start = 15.0
         self.x_drift_penalty_full = 80.0
         self.x_drift_observation_scale = 80.0
+        self.step_reward_deadzone_cm = 1.0
+        self.meaningful_step_cm = 3.0
+        self.stagnation_threshold_cm = 1.0
+        self.max_stagnation_penalty = 0.12
         self._interactive_reset_default = self._read_interactive_reset_default()
 
                
@@ -275,9 +279,13 @@ class SnakeEnv(gymnasium.Env):
         signed_progress_from_start = self.progress_direction_z * (currZPos - self.starting_position_z)
         position_reward = float(np.clip(signed_progress_from_start / max_distance, -1.0, 1.0))
 
-        # Smaller shaping term: reward making forward progress this step.
+        # Only reward step progress once it clears a small deadzone so
+        # tiny wiggles are not reinforced as useful locomotion.
         signed_delta_z = self.progress_direction_z * (currZPos - self.prevPos)
-        step_reward = float(np.clip(signed_delta_z / 5.0, -1.0, 1.0))
+        step_reward_scale = max(self.meaningful_step_cm - self.step_reward_deadzone_cm, 1e-6)
+        step_reward = float(
+            np.clip((signed_delta_z - self.step_reward_deadzone_cm) / step_reward_scale, -1.0, 1.0)
+        )
 
         # check if the goal is reached along Z axis
         if self.starting_position_z is not None and self.targetPositionZ < self.starting_position_z:
@@ -290,12 +298,17 @@ class SnakeEnv(gymnasium.Env):
         _, x_drift, _, x_drift_penalty = self._compute_x_drift(tmp_pos[0])
         heading_penalty = abs(tmp_pos[3])
 
-        # Penalize tiny/no progress so the policy does not settle into micro-motions.
-        stagnation_penalty = 0.05 if signed_delta_z < 0.15 else 0.0
+        # Penalize sub-threshold forward motion so creeping in place is worse
+        # than committing to a meaningful step.
+        progress_shortfall = max(self.stagnation_threshold_cm - signed_delta_z, 0.0)
+        stagnation_penalty = float(
+            np.clip(progress_shortfall / max(self.stagnation_threshold_cm, 1e-6), 0.0, 1.0)
+            * self.max_stagnation_penalty
+        )
 
         reward = (
-            (0.8 * position_reward)
-            + (0.2 * step_reward)
+            (0.75 * position_reward)
+            + (0.25 * step_reward)
             - (0.15 * x_drift_penalty)
             - (0.15 * heading_penalty)
             - stagnation_penalty
@@ -318,6 +331,8 @@ class SnakeEnv(gymnasium.Env):
             'x_drift_penalty': x_drift_penalty,
             'heading_penalty': heading_penalty,
             'stagnation_penalty': stagnation_penalty,
+            'signed_delta_z': signed_delta_z,
+            'progress_shortfall_cm': progress_shortfall,
         }
 
         print(f"Reward: {reward}")

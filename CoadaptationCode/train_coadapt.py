@@ -168,6 +168,10 @@ class Train():
         name = "Losses_Design{}_{}".format(str(self.design_counter), self.results_tag)
         self.lossFilename = self.date+name
 
+    def _checkpoint_results_dir(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results_bazyli')
+
+
     def _build_randomized_training_schedule(self):
         self.current_schedule_seed = self._stable_seed('terrain_schedule', self.design_counter)
         schedule_rng = np.random.default_rng(self.current_schedule_seed)
@@ -734,7 +738,7 @@ class Train():
             summary_row[f'{terrain}_Mean_Episode_Length'] = terrain_mean_lengths[terrain]
             summary_row[f'{terrain}_Mean_Success_Steps'] = terrain_mean_success_steps[terrain]
 
-        results_dir = 'results_bazyli'
+        results_dir = self._checkpoint_results_dir()
         os.makedirs(results_dir, exist_ok=True)
 
         summary_csv_path = os.path.join(results_dir, f'{self.date}_design_eval_summary.csv')
@@ -766,7 +770,7 @@ class Train():
         """
          # TODO: Edit this to store more efficiently
 
-        results_dir = 'results_bazyli'
+        results_dir = self._checkpoint_results_dir()
         os.makedirs(results_dir, exist_ok=True)
         checkpoint_prefix = f'{self.date}_Design{self.design_counter}_ep{self.episode_counter}'
 
@@ -1170,7 +1174,7 @@ if __name__ == '__main__':
     trainingObj.passLocks(optiLock, motorLock)
 
     # if resuming from a checkpoint:
-    base_path = "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_bazyli"
+    base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results_bazyli')
     #change name
     checkpoint_prefix = "2025_06_03_Design0_ep30"
 
