@@ -95,6 +95,7 @@ class Train():
         
 
         self.date = datetime.now().strftime("%Y_%m_%d") # for files
+        self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         
     def _action_dim(self):
         action_shape = getattr(self.env.action_space, "shape", None)
@@ -157,10 +158,43 @@ class Train():
         self.poppolicyloss = []
         self.progressRewardComponents = []
         self.distanceProgressCmComponents = []
+        self.rawDistanceProgressCmComponents = []
+        self.windowProgressCmComponents = []
         self.xDriftPenaltyComponents = []
         self.headingPenaltyComponents = []
+        self.livingPenaltyComponents = []
         self.noProgressPenaltyComponents = []
         self.backwardPenaltyComponents = []
+
+    def _upsert_csv_rows(self, path, frame, key_columns):
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        frame = frame.copy()
+
+        if not os.path.isfile(path):
+            frame.to_csv(path, index=False)
+            return
+
+        try:
+            existing = pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            frame.to_csv(path, index=False)
+            return
+
+        for column in frame.columns:
+            if column not in existing.columns:
+                existing[column] = np.nan
+        for column in existing.columns:
+            if column not in frame.columns:
+                frame[column] = np.nan
+
+        ordered_columns = list(existing.columns)
+        existing_keys = existing[key_columns].astype(str).agg('||'.join, axis=1)
+        incoming_keys = set(frame[key_columns].astype(str).agg('||'.join, axis=1))
+        if incoming_keys:
+            existing = existing[~existing_keys.isin(incoming_keys)]
+
+        updated = pd.concat([existing[ordered_columns], frame[ordered_columns]], ignore_index=True)
+        updated.to_csv(path, index=False)
 
     def _set_output_filenames(self):
         self.date = datetime.now().strftime("%Y_%m_%d")
@@ -294,6 +328,7 @@ class Train():
             self.progressRewardComponents = []
             self.distanceProgressCmComponents = []
             self.rawDistanceProgressCmComponents = []
+            self.windowProgressCmComponents = []
             self.xDriftPenaltyComponents = []
             self.headingPenaltyComponents = []
             self.livingPenaltyComponents = []
@@ -385,6 +420,7 @@ class Train():
                 self.progressRewardComponents.append(float(info.get('progress_reward', np.nan)))
                 self.distanceProgressCmComponents.append(float(info.get('distance_progress_cm', np.nan)))
                 self.rawDistanceProgressCmComponents.append(float(info.get('raw_distance_progress_cm', np.nan)))
+                self.windowProgressCmComponents.append(float(info.get('window_progress_cm', np.nan)))
                 self.xDriftPenaltyComponents.append(float(info.get('x_drift_penalty', np.nan)))
                 self.headingPenaltyComponents.append(float(info.get('heading_penalty', np.nan)))
                 self.livingPenaltyComponents.append(float(info.get('living_penalty', np.nan)))
@@ -1054,7 +1090,6 @@ class Train():
             print(f"failed to load replay buffer: {e}")
 
     def logData(self):
-        os.makedirs(os.path.dirname(self.filename) or '.', exist_ok=True)
         xPositionList, yPositionList = SnakeEnv.returnOptiXList()
         min_len = min(len(self.timesteps), len(xPositionList))
 
@@ -1065,6 +1100,7 @@ class Train():
         self.progressRewardComponents = self.progressRewardComponents[:min_len]
         self.distanceProgressCmComponents = self.distanceProgressCmComponents[:min_len]
         self.rawDistanceProgressCmComponents = self.rawDistanceProgressCmComponents[:min_len]
+        self.windowProgressCmComponents = self.windowProgressCmComponents[:min_len]
         self.xDriftPenaltyComponents = self.xDriftPenaltyComponents[:min_len]
         self.headingPenaltyComponents = self.headingPenaltyComponents[:min_len]
         self.livingPenaltyComponents = self.livingPenaltyComponents[:min_len]
@@ -1080,6 +1116,7 @@ class Train():
             self.stateList[i] = self.stateList[i][:min_len]
         rewardDF = pd.DataFrame()
 
+        rewardDF['Run_ID'] = [self.run_id] * len(self.timesteps)
         rewardDF['Episode'] = [self.episode_counter]* len(self.timesteps)
         rewardDF['Timestep'] = self.timesteps
         rewardDF['X_Position']= xPositionList # added this, need to see if it works
@@ -1089,6 +1126,7 @@ class Train():
         rewardDF['Progress_Reward'] = self.progressRewardComponents
         rewardDF['Distance_Progress_Cm'] = self.distanceProgressCmComponents
         rewardDF['Raw_Distance_Progress_Cm'] = self.rawDistanceProgressCmComponents
+        rewardDF['Window_Progress_Cm'] = self.windowProgressCmComponents
         rewardDF['X_Drift_Penalty'] = self.xDriftPenaltyComponents
         rewardDF['Heading_Penalty'] = self.headingPenaltyComponents
         rewardDF['Living_Penalty'] = self.livingPenaltyComponents
@@ -1108,7 +1146,6 @@ class Train():
         # log state variablesmotor_and_coadaptation/CoadaptationCode/train_coadapt.py
         for motor_idx, motor_actions in enumerate(self.actionList):
             rewardDF[f'Motor{motor_idx + 1}_Action'] = motor_actions
-      
 
         observation_labels = SnakeEnv.get_observation_feature_labels()
         for obs_idx, obs_values in enumerate(self.stateList):
@@ -1118,34 +1155,21 @@ class Train():
                 column_name = f'Obs_{obs_idx}'
             rewardDF[column_name] = obs_values
 
-        current_episode = self.episode_counter
-        # read existing file if it exists and is valid
-        if os.path.isfile(self.filename):
-            try:
-                existing = pd.read_csv(self.filename)
-                # remove old entries of current episode
-                existing = existing[existing['Episode'] != current_episode]
-                updated = pd.concat([existing, rewardDF], ignore_index=True)
-                updated.to_csv(self.filename, index=False)
-            except pd.errors.EmptyDataError:
-                print(f"{self.filename} is empty. creating new.")
-                rewardDF.to_csv(self.filename, index=False)
-        else:
-            rewardDF.to_csv(self.filename, index=False)
+        self._upsert_csv_rows(self.filename, rewardDF, ['Run_ID', 'Episode'])
 
     def logTrainLoss(self):
-        os.makedirs(os.path.dirname(self.lossFilename) or '.', exist_ok=True)
         lossDF = pd.DataFrame()
+        lossDF['Run_ID'] = [self.run_id] * len(self.epListLoss)
         lossDF['Episode'] = self.epListLoss
         lossDF['Ind_Q1_Loss'] = self.q1loss
         lossDF['Ind_Q2_Loss'] = self.q2loss
         lossDF['Ind_Policy_Loss'] = self.policyloss
 
-         
         lossDF['Pop_Q1_Loss'] = self.popq1loss
         lossDF['Pop_Q2_Loss'] = self.popq2loss
         lossDF['Pop_Policy_Loss'] = self.poppolicyloss
-        lossDF.to_csv(self.lossFilename, index=False)
+        self._upsert_csv_rows(self.lossFilename, lossDF, ['Run_ID', 'Episode'])
+
 
 
     def passLocks(self, oLock, mLock):
@@ -1212,4 +1236,3 @@ if __name__ == '__main__':
     optiThread.start() 
     trainingloopThread.start()
     trainingloopThread.join()
-
