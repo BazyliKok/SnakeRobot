@@ -134,11 +134,13 @@ class SnakeEnv(gymnasium.Env):
         self.x_drift_penalty_start = 15.0
         self.x_drift_penalty_full = 80.0
         self.x_drift_observation_scale = 80.0
-        self.step_reward_deadzone_cm = 1.0
-        self.meaningful_step_cm = 3.0
-        self.idle_step_penalty = 0.03
-        self.backward_step_penalty_scale = 0.25
-        self.backward_progress_deadzone_cm = 0.5
+        self.progress_filter_alpha = 0.25
+        self.progress_deadzone_cm = 0.5
+        self.progress_fullscale_cm = 2.5
+        self.step_living_penalty = 0.02
+        self.heading_penalty_deadzone = 25.0 / 180.0
+        self.x_drift_penalty_scale = 0.10
+        self.heading_penalty_scale = 0.05
         self.terminal_reward_bonus = 5.0
         self.reward_clip_min = -3.0
         self.reward_clip_max = 5.0
@@ -160,6 +162,10 @@ class SnakeEnv(gymnasium.Env):
         self.prevPos = 0 
         self.prevXpos = 0
         self._prev_raw_obs = None
+        self.filtered_z = None
+        self.filtered_x = None
+        self.filtered_heading = None
+        self.prev_filtered_distance_to_goal = None
 
         self.distList = []
         self.rewardList = []
@@ -206,6 +212,42 @@ class SnakeEnv(gymnasium.Env):
         # Make moderate head sway almost free and reserve strong penalties for clearly excessive drift.
         x_drift_penalty = float(normalized_penalty ** 2)
         return signed_x_drift, abs_x_drift, x_drift_norm, x_drift_penalty
+
+    def _update_filtered_motion_state(self, raw_observation):
+        alpha = float(np.clip(self.progress_filter_alpha, 0.0, 1.0))
+        curr_x_abs = float(raw_observation[0])
+        curr_z_abs = float(raw_observation[2])
+        curr_heading_norm = float(raw_observation[3])
+
+        if self.filtered_z is None:
+            self.filtered_z = curr_z_abs
+            self.filtered_x = curr_x_abs
+            self.filtered_heading = curr_heading_norm
+        else:
+            self.filtered_z = alpha * curr_z_abs + (1.0 - alpha) * self.filtered_z
+            self.filtered_x = alpha * curr_x_abs + (1.0 - alpha) * self.filtered_x
+            self.filtered_heading = alpha * curr_heading_norm + (1.0 - alpha) * self.filtered_heading
+
+        curr_filtered_distance_to_goal = abs(self.targetPositionZ - self.filtered_z)
+        if self.prev_filtered_distance_to_goal is None:
+            filtered_distance_progress_cm = 0.0
+        else:
+            filtered_distance_progress_cm = (
+                self.prev_filtered_distance_to_goal - curr_filtered_distance_to_goal
+            )
+        self.prev_filtered_distance_to_goal = curr_filtered_distance_to_goal
+        return curr_filtered_distance_to_goal, filtered_distance_progress_cm
+
+    def _compute_signed_progress_reward(self, filtered_distance_progress_cm):
+        progress_span = max(self.progress_fullscale_cm - self.progress_deadzone_cm, 1e-6)
+        if abs(filtered_distance_progress_cm) <= self.progress_deadzone_cm:
+            return 0.0
+
+        magnitude = (
+            abs(filtered_distance_progress_cm) - self.progress_deadzone_cm
+        ) / progress_span
+        signed_progress = np.sign(filtered_distance_progress_cm) * np.clip(magnitude, 0.0, 1.0)
+        return float(signed_progress)
 
     def _build_policy_observation(self, raw_observation):
         raw_observation = np.asarray(raw_observation, dtype=np.float32)
@@ -277,16 +319,12 @@ class SnakeEnv(gymnasium.Env):
         # extract Z position from absolute observation (not delta)
         currZPos = tmp_pos[2]  # opti Z position of the robot (absolute, env units)
 
-        max_distance = max(self.targetDistanceZ, 1.0)
-        # Reward actual progress toward the target on this step.
+        # Track both the raw head motion and the short-horizon filtered motion.
         prev_distance_to_goal = abs(self.targetPositionZ - self.prevPos)
         curr_distance_to_goal = abs(self.targetPositionZ - currZPos)
-        distance_progress_cm = prev_distance_to_goal - curr_distance_to_goal
-
-        step_reward_scale = max(self.meaningful_step_cm - self.step_reward_deadzone_cm, 1e-6)
-        progress_reward = float(
-            np.clip((distance_progress_cm - self.step_reward_deadzone_cm) / step_reward_scale, 0.0, 1.0)
-        )
+        raw_distance_progress_cm = prev_distance_to_goal - curr_distance_to_goal
+        curr_filtered_distance_to_goal, distance_progress_cm = self._update_filtered_motion_state(tmp_pos)
+        progress_reward = self._compute_signed_progress_reward(distance_progress_cm)
 
         # check if the goal is reached along Z axis
         if self.starting_position_z is not None and self.targetPositionZ < self.starting_position_z:
@@ -295,36 +333,39 @@ class SnakeEnv(gymnasium.Env):
             terminated = currZPos >= self.targetPositionZ
         print(f"Step check: currZ={currZPos:.3f}, targetZ={self.targetPositionZ:.3f}, terminated={terminated}")
 
-        # Keep the body straight: penalize heading offset and sideways X drift.
-        _, x_drift, _, x_drift_penalty = self._compute_x_drift(tmp_pos[0])
-        heading_penalty = abs(tmp_pos[3])
-
-        # Standing still should be slightly bad, and moving away from the goal
-        # should be worse than simply failing to progress.
-        no_progress_penalty = self.idle_step_penalty if distance_progress_cm < self.step_reward_deadzone_cm else 0.0
-        backward_progress_cm = max(-distance_progress_cm - self.backward_progress_deadzone_cm, 0.0)
-        backward_penalty = float(
-            np.clip(backward_progress_cm / max(self.meaningful_step_cm, 1e-6), 0.0, 1.0)
-            * self.backward_step_penalty_scale
+        # Score net locomotion, not raw head sway.
+        _, x_drift, _, x_drift_penalty = self._compute_x_drift(self.filtered_x)
+        heading_error = max(abs(self.filtered_heading) - self.heading_penalty_deadzone, 0.0)
+        heading_penalty = float(
+            np.clip(
+                heading_error / max(1.0 - self.heading_penalty_deadzone, 1e-6),
+                0.0,
+                1.0,
+            )
         )
+        living_penalty = self.step_living_penalty
+        no_progress_penalty = 0.0
+        backward_penalty = 0.0
 
         reward = (
             progress_reward
+            - living_penalty
             - no_progress_penalty
             - backward_penalty
-            - (0.10 * x_drift_penalty)
-            - (0.10 * heading_penalty)
+            - (self.x_drift_penalty_scale * x_drift_penalty)
+            - (self.heading_penalty_scale * heading_penalty)
         )
         if terminated:
             reward += self.terminal_reward_bonus
         reward = float(np.clip(reward, self.reward_clip_min, self.reward_clip_max))
         print(
             f"reward components -> progress_reward: {progress_reward:.4f}, "
-            f"distance_progress_cm: {distance_progress_cm:.4f}, "
+            f"raw_distance_progress_cm: {raw_distance_progress_cm:.4f}, "
+            f"filtered_distance_progress_cm: {distance_progress_cm:.4f}, "
             f"prev_distance_to_goal: {prev_distance_to_goal:.4f}, curr_distance_to_goal: {curr_distance_to_goal:.4f}, "
+            f"curr_filtered_distance_to_goal: {curr_filtered_distance_to_goal:.4f}, "
             f"x_drift_cm: {x_drift:.4f}, x_drift_penalty: {x_drift_penalty:.4f}, "
-            f"heading_penalty: {heading_penalty:.4f}, no_progress_penalty: {no_progress_penalty:.4f}, "
-            f"backward_penalty: {backward_penalty:.4f}"
+            f"filtered_heading_penalty: {heading_penalty:.4f}, living_penalty: {living_penalty:.4f}"
         )
 
         truncated = False
@@ -332,14 +373,17 @@ class SnakeEnv(gymnasium.Env):
             'info': 0,
             'progress_reward': progress_reward,
             'distance_progress_cm': distance_progress_cm,
+            'raw_distance_progress_cm': raw_distance_progress_cm,
             'step_reward': progress_reward,
             'x_drift_penalty': x_drift_penalty,
             'heading_penalty': heading_penalty,
+            'living_penalty': living_penalty,
             'no_progress_penalty': no_progress_penalty,
             'backward_penalty': backward_penalty,
             'stagnation_penalty': no_progress_penalty,
             'prev_distance_to_goal': prev_distance_to_goal,
             'curr_distance_to_goal': curr_distance_to_goal,
+            'curr_filtered_distance_to_goal': curr_filtered_distance_to_goal,
         }
 
         print(f"Reward: {reward}")
@@ -422,6 +466,10 @@ class SnakeEnv(gymnasium.Env):
         )
         self.prevPos = starting_z_abs
         self.prevXpos = starting_x_abs
+        self.filtered_z = starting_z_abs
+        self.filtered_x = starting_x_abs
+        self.filtered_heading = float(raw_observation[3])
+        self.prev_filtered_distance_to_goal = abs(self.targetPositionZ - self.filtered_z)
         self._prev_raw_obs = copy.deepcopy(raw_observation)
 
         observation = self._build_policy_observation(raw_observation)

@@ -293,8 +293,10 @@ class Train():
             self.timesteps = []
             self.progressRewardComponents = []
             self.distanceProgressCmComponents = []
+            self.rawDistanceProgressCmComponents = []
             self.xDriftPenaltyComponents = []
             self.headingPenaltyComponents = []
+            self.livingPenaltyComponents = []
             self.noProgressPenaltyComponents = []
             self.backwardPenaltyComponents = []
 
@@ -382,8 +384,10 @@ class Train():
                 self.epList.append(self.currEp) # to make note of what episode we are on
                 self.progressRewardComponents.append(float(info.get('progress_reward', np.nan)))
                 self.distanceProgressCmComponents.append(float(info.get('distance_progress_cm', np.nan)))
+                self.rawDistanceProgressCmComponents.append(float(info.get('raw_distance_progress_cm', np.nan)))
                 self.xDriftPenaltyComponents.append(float(info.get('x_drift_penalty', np.nan)))
                 self.headingPenaltyComponents.append(float(info.get('heading_penalty', np.nan)))
+                self.livingPenaltyComponents.append(float(info.get('living_penalty', np.nan)))
                 self.noProgressPenaltyComponents.append(float(info.get('no_progress_penalty', info.get('stagnation_penalty', np.nan))))
                 self.backwardPenaltyComponents.append(float(info.get('backward_penalty', np.nan)))
                 for i in range(len(state)): #was 17
@@ -1060,8 +1064,10 @@ class Train():
         self.cumulativeRewards = self.cumulativeRewards[:min_len]
         self.progressRewardComponents = self.progressRewardComponents[:min_len]
         self.distanceProgressCmComponents = self.distanceProgressCmComponents[:min_len]
+        self.rawDistanceProgressCmComponents = self.rawDistanceProgressCmComponents[:min_len]
         self.xDriftPenaltyComponents = self.xDriftPenaltyComponents[:min_len]
         self.headingPenaltyComponents = self.headingPenaltyComponents[:min_len]
+        self.livingPenaltyComponents = self.livingPenaltyComponents[:min_len]
         self.noProgressPenaltyComponents = self.noProgressPenaltyComponents[:min_len]
         self.backwardPenaltyComponents = self.backwardPenaltyComponents[:min_len]
         xPositionList = xPositionList[-min_len:]
@@ -1082,8 +1088,10 @@ class Train():
         rewardDF['Cumulative_Rewards'] = self.cumulativeRewards
         rewardDF['Progress_Reward'] = self.progressRewardComponents
         rewardDF['Distance_Progress_Cm'] = self.distanceProgressCmComponents
+        rewardDF['Raw_Distance_Progress_Cm'] = self.rawDistanceProgressCmComponents
         rewardDF['X_Drift_Penalty'] = self.xDriftPenaltyComponents
         rewardDF['Heading_Penalty'] = self.headingPenaltyComponents
+        rewardDF['Living_Penalty'] = self.livingPenaltyComponents
         rewardDF['No_Progress_Penalty'] = self.noProgressPenaltyComponents
         rewardDF['Backward_Penalty'] = self.backwardPenaltyComponents
         rewardDF['Terrain'] = [SnakeEnv.get_current_terrain()] * len(self.timesteps)
