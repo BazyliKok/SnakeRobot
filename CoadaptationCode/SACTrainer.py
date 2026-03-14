@@ -56,6 +56,7 @@ class SACTrainer(TorchTrainer):
             else:
                 self.target_entropy = -np.prod(self.env.action_space.shape).item()  # heuristic value from Tuomas
             self.log_alpha = ptu.zeros(1, requires_grad=True)
+            self.log_alpha.data.fill_(float(np.log(max(alpha, 1e-6))))
             self.alpha_optimizer = optimizer_class(
                 [self.log_alpha],
                 lr=policy_lr,
@@ -90,6 +91,62 @@ class SACTrainer(TorchTrainer):
         self._n_train_steps_total = 0
         self._need_to_update_eval_statistics = True
         self._policy_forward_signature = inspect.signature(self.policy.forward)
+        self._reset_diagnostic_history()
+
+    def _reset_diagnostic_history(self):
+        self._diagnostic_history = OrderedDict(
+            [
+                ('QF1 Loss', []),
+                ('QF2 Loss', []),
+                ('Policy Loss', []),
+                ('Alpha', []),
+                ('Alpha Loss', []),
+            ]
+        )
+
+    def _record_diagnostic(self, key, value):
+        if key not in self._diagnostic_history:
+            self._diagnostic_history[key] = []
+        self._diagnostic_history[key].append(float(value))
+
+    def start_diagnostics_epoch(self):
+        self._reset_diagnostic_history()
+
+    def _refresh_eval_statistics(self, q1_pred, q2_pred, q_target, log_pi, policy_mean, policy_log_std):
+        scalar_stats = OrderedDict()
+        for key, values in self._diagnostic_history.items():
+            if values:
+                scalar_stats[key] = float(np.mean(values))
+
+        self.eval_statistics = OrderedDict()
+        self.eval_statistics.update(scalar_stats)
+        self.eval_statistics['Train Updates'] = len(self._diagnostic_history['QF1 Loss'])
+        self.eval_statistics.update(create_stats_ordered_dict(
+            'Q1 Predictions',
+            ptu.get_numpy(q1_pred),
+        ))
+        self.eval_statistics.update(create_stats_ordered_dict(
+            'Q2 Predictions',
+            ptu.get_numpy(q2_pred),
+        ))
+        self.eval_statistics.update(create_stats_ordered_dict(
+            'Q Targets',
+            ptu.get_numpy(q_target),
+        ))
+        self.eval_statistics.update(create_stats_ordered_dict(
+            'Log Pis',
+            ptu.get_numpy(log_pi),
+        ))
+        self.eval_statistics.update(create_stats_ordered_dict(
+            'Policy mu',
+            ptu.get_numpy(policy_mean),
+        ))
+        self.eval_statistics.update(create_stats_ordered_dict(
+            'Policy log std',
+            ptu.get_numpy(policy_log_std),
+        ))
+        if not self.use_automatic_entropy_tuning:
+            self.eval_statistics['Alpha'] = float(self._alpha)
 
     def _policy_forward(self, obs):
         policy_kwargs = {}
@@ -190,6 +247,7 @@ class SACTrainer(TorchTrainer):
             self.qf2(obs, new_obs_actions),
         )
         policy_loss = (alpha*log_pi - q_new_actions).mean()
+        policy_loss_value = float(np.mean(ptu.get_numpy(policy_loss.detach())))
 
         """
         QF Loss
@@ -236,52 +294,28 @@ class SACTrainer(TorchTrainer):
         """
         Save some statistics for eval
         """
-        if self._need_to_update_eval_statistics:
-            self._need_to_update_eval_statistics = False
-            """
-            Eval should set this to None.
-            This way, these statistics are only computed for one batch.
-            """
-            policy_loss = (log_pi - q_new_actions).mean()
-
-            self.eval_statistics['QF1 Loss'] = np.mean(ptu.get_numpy(qf1_loss))
-            self.eval_statistics['QF2 Loss'] = np.mean(ptu.get_numpy(qf2_loss))
-            self.eval_statistics['Policy Loss'] = np.mean(ptu.get_numpy(
-                policy_loss
-            ))
-            self.eval_statistics.update(create_stats_ordered_dict(
-                'Q1 Predictions',
-                ptu.get_numpy(q1_pred),
-            ))
-            self.eval_statistics.update(create_stats_ordered_dict(
-                'Q2 Predictions',
-                ptu.get_numpy(q2_pred),
-            ))
-            self.eval_statistics.update(create_stats_ordered_dict(
-                'Q Targets',
-                ptu.get_numpy(q_target),
-            ))
-            self.eval_statistics.update(create_stats_ordered_dict(
-                'Log Pis',
-                ptu.get_numpy(log_pi),
-            ))
-            self.eval_statistics.update(create_stats_ordered_dict(
-                'Policy mu',
-                ptu.get_numpy(policy_mean),
-            ))
-            self.eval_statistics.update(create_stats_ordered_dict(
-                'Policy log std',
-                ptu.get_numpy(policy_log_std),
-            ))
-            if self.use_automatic_entropy_tuning:
-                self.eval_statistics['Alpha'] = alpha.item()
-                self.eval_statistics['Alpha Loss'] = alpha_loss.item()
+        self._need_to_update_eval_statistics = False
+        self._record_diagnostic('QF1 Loss', np.mean(ptu.get_numpy(qf1_loss.detach())))
+        self._record_diagnostic('QF2 Loss', np.mean(ptu.get_numpy(qf2_loss.detach())))
+        self._record_diagnostic('Policy Loss', policy_loss_value)
+        if self.use_automatic_entropy_tuning:
+            self._record_diagnostic('Alpha', alpha.item())
+            self._record_diagnostic('Alpha Loss', alpha_loss.item())
+        self._refresh_eval_statistics(
+            q1_pred=q1_pred,
+            q2_pred=q2_pred,
+            q_target=q_target,
+            log_pi=log_pi,
+            policy_mean=policy_mean,
+            policy_log_std=policy_log_std,
+        )
         self._n_train_steps_total += 1
 
     def get_diagnostics(self):
         return self.eval_statistics
 
     def end_epoch(self, epoch):
+        self._reset_diagnostic_history()
         self._need_to_update_eval_statistics = True
 
     @property

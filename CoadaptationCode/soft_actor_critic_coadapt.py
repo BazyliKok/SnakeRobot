@@ -48,57 +48,36 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         self._batch_size = 32
         self._nmbr_ind_updates = 100  # cap on individual SAC updates per train call
         self._nmbr_pop_updates = 50  # cap on population SAC updates per train call
+        self._sac_trainer_kwargs = dict(
+            discount=0.99,
+            reward_scale=1.0,
+            policy_lr=1E-3,
+            qf_lr=1E-3,
+            optimizer_class=optim.Adam,
+            soft_target_tau=.01,
+            target_update_period=1,
+            plotter=None,
+            render_eval_paths=False,
+            use_automatic_entropy_tuning=True,
+            target_entropy=None,
+            alpha=0.1,
+        )
 
         # set up trainer 
-        self._ind_algorithm =  SACTrainer(
-            env=self._env,
+        self._ind_algorithm = self._build_trainer(
             policy=self._ind_policy,
             qf1=self._ind_qf1,
             qf2=self._ind_qf2,
             target_qf1=self._ind_qf1_target,
             target_qf2=self._ind_qf2_target,
-
-            discount=0.99,
-            reward_scale=1.0,
-
-            
-            policy_lr= 1E-3, #5E-4, # 1E-5,
-            qf_lr= 1E-3, #5E-4, # 1E-5,
-            optimizer_class=optim.Adam, 
-
-            soft_target_tau=.01,
-            target_update_period=1,
-            plotter=None,
-            render_eval_paths=False,
-
-            use_automatic_entropy_tuning=False,
-            target_entropy=None,
-            alpha=.01  # was .01
-
         )
 
-        self._pop_algorithm =  SACTrainer(
-            env=self._env,
+        self._pop_algorithm = self._build_trainer(
             policy=self._pop_policy,
             qf1=self._pop_qf1,
             qf2=self._pop_qf2,
             target_qf1=self._pop_qf1_target,
             target_qf2=self._pop_qf2_target,
-
-            
-            policy_lr=  1E-3, #5E-4, #1E-3, # 1E-5,
-            qf_lr= 1E-3, #5E-4, #1E-3, # 1E-5,
-            optimizer_class=optim.Adam, 
-
-            soft_target_tau=.01,
-            target_update_period=1,
-            plotter=None,
-            render_eval_paths=False,
-
-            use_automatic_entropy_tuning=False,
-            target_entropy=None,
-            alpha=.01  # was .01
-
         )
 
         
@@ -112,29 +91,12 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         individual networks and copies the values of the target network.
         """
         ptu.set_gpu_mode(False)
-        self._ind_algorithm = SACTrainer(
-            env=self._env,
+        self._ind_algorithm = self._build_trainer(
             policy=self._ind_policy,
             qf1=self._ind_qf1,
             qf2=self._ind_qf2,
             target_qf1=self._ind_qf1_target,
             target_qf2=self._ind_qf2_target,
-            discount=0.99,
-            reward_scale=1.0,
-
-            
-            policy_lr= 1E-3, #5E-4, #1E-3, # 1E-5,
-            qf_lr= 1E-3, #5E-4, #1E-3, # 1E-5,
-            optimizer_class=optim.Adam, 
-
-            soft_target_tau=.01,
-            target_update_period=1,
-            plotter=None,
-            render_eval_paths=False,
-
-            use_automatic_entropy_tuning=False,
-            target_entropy=None,
-            alpha=.01  # was .01
         )
 
         self._networks['individual'] 
@@ -146,6 +108,17 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         print('RESET INIT')
         #CHANGE 6/16 try without copying network
         utils.copy_pop_to_ind(networks_pop=self._networks['population'], networks_ind=self._networks['individual'])
+
+    def _build_trainer(self, policy, qf1, qf2, target_qf1, target_qf2):
+        return SACTrainer(
+            env=self._env,
+            policy=policy,
+            qf1=qf1,
+            qf2=qf2,
+            target_qf1=target_qf1,
+            target_qf2=target_qf2,
+            **self._sac_trainer_kwargs,
+        )
         
   
     def single_train_step(self, train_ind=True, train_pop=False):
@@ -170,6 +143,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
                 max(1, int(np.ceil(ind_steps_can_sample / self._batch_size)))
             )
             print(f'individual SAC updates: {ind_updates} from {ind_steps_can_sample} replay steps')
+            self._ind_algorithm.start_diagnostics_epoch()
             for i in range(ind_updates):
                 #print('in ind for')
                 batch = self._replay.random_batch(self._batch_size)
@@ -190,6 +164,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
                 max(1, int(np.ceil(pop_steps_can_sample / self._batch_size)))
             )
             print(f'population SAC updates: {pop_updates} from {pop_steps_can_sample} replay steps')
+            self._pop_algorithm.start_diagnostics_epoch()
             for i in range(pop_updates):
                 #print('in pop for')
                 batch = self._replay.random_batch(self._batch_size)

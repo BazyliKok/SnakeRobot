@@ -33,7 +33,7 @@ class Train():
         self.optimized_params = None
         self._episode_length = 250 # number of timesteps per episode
         self.episode_counter = None
-        self.policy_action_warmup_episodes = 0  # full-random episodes before policy/random mixing starts
+        self.policy_action_warmup_episodes = 2  # full-random episodes before policy/random mixing starts
         self.training_update_warmup_episodes = 1  # collected episodes before SAC updates start
         self.design_cylces = 20 # total number of design cycles
         self.terrain_sequence = list(SnakeEnv.terrains)
