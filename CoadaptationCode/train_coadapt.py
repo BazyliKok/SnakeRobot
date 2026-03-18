@@ -572,7 +572,7 @@ class Train():
         self.replay.set_mode("species")
         self.collect_training_experience() # collect data
         
-        if self.design_counter >= 3: # only train population afer certain number of designs, in this case 3
+        if self.design_counter >= 2: # only train population after certain number of designs, in this case 2
             train_pop = True
         else:
             train_pop = False
