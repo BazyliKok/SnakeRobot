@@ -673,9 +673,11 @@ class SnakeEnv(gymnasium.Env):
     def motorPos():
         SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
-        SnakeEnv.motorPosition = SnakeEnv.motors.readPos()
-        # print('In thread', SnakeEnv.motorPosition)
-        SnakeEnv.motorLock.release()
+        try:
+            SnakeEnv.motorPosition = SnakeEnv.motors.readPos()
+            # print('In thread', SnakeEnv.motorPosition)
+        finally:
+            SnakeEnv.motorLock.release()
         time.sleep(.001)
         return
     
@@ -688,8 +690,10 @@ class SnakeEnv(gymnasium.Env):
     def disableMotorTorque():
         SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
-        SnakeEnv.motorPosition = SnakeEnv.motors.disableTorque()
-        SnakeEnv.motorLock.release()
+        try:
+            SnakeEnv.motors.disableTorque()
+        finally:
+            SnakeEnv.motorLock.release()
         #time.sleep(.005)
         return   
 
@@ -697,8 +701,10 @@ class SnakeEnv(gymnasium.Env):
     def enableMotorTorque():
         SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
-        SnakeEnv.motorPosition = SnakeEnv.motors.enableTorque()
-        SnakeEnv.motorLock.release()
+        try:
+            SnakeEnv.motors.enableTorque()
+        finally:
+            SnakeEnv.motorLock.release()
         #time.sleep(.005)
         return   
 

@@ -43,14 +43,23 @@ class MotorsSynced:
         self.PROTOCOL_VERSION               = float(os.getenv("SNAKE_DXL_PROTOCOL_VERSION", "2.0")) # make sure motors are on this protocol version
         self.DXL_ID                         = list(reversed([1,2,3,4,5,6,7]))
         #[0,2,3,4,5,6]# IDs for motors, have these match to IDs set in dynamixel software
+        self.ADDR_DRIVE_MODE                = 10
         self.ADDR_MX_TORQUE_ENABLE          = 64 # this ADDR value changes for different dynamixel models: https://emanual.robotis.com/docs/en/dxl/
         self.COMM_SUCCESS                   = 0 # variable for if message being sent to motors was successfully sent
+        self.ADDR_PROFILE_ACCELERATION      = 108
+        self.ADDR_PROFILE_VELOCITY          = 112
         self.ADDR_GOAL_POSITION             = 116 # for writing position on table
         self.ADDR_PRESENT_POSITION          = 132 # for reading present position on table
         self.ADDR_PRESENT_VELOC             = 128 # for reading velocity
         self.ADDR_PRESENT_LOAD              = 126 # for reading variable similar to torque
+        self.ADDR_HARDWARE_ERROR_STATUS     = 70
         self.DXL_MOVING_STATUS_THRESHOLD    = 20 #11, higher threshold = faster mvmt but less accuracy in position Dynamixel moving status threshold, was 20
-        
+        self.DRIVE_MODE                     = int(os.getenv("SNAKE_DXL_DRIVE_MODE", "4"))
+        self.PROFILE_ACCELERATION           = int(os.getenv("SNAKE_DXL_PROFILE_ACCELERATION", "25"))
+        self.PROFILE_VELOCITY               = int(os.getenv("SNAKE_DXL_PROFILE_VELOCITY", "100"))
+        self.REBOOT_WAIT_SECONDS            = float(os.getenv("SNAKE_DXL_REBOOT_WAIT_S", "1.5"))
+        self.last_good_motor_pos            = [0.0] * len(self.DXL_ID)
+        self._recovery_in_progress          = False
 
         self.LEN_GOAL_POS                   = 4 # data byte length
         self.LEN_PRES_POS                   = 4
@@ -88,10 +97,8 @@ class MotorsSynced:
             print("Failed to change the baudrate!")
             quit()
         
-        # setting motor velocity
-        for motorID in self.DXL_ID:
-            dxlCommRes, dxlError = self.packetHandler.write4ByteTxRx(self.portHandler, motorID, 112, 500)
-            self._log_motor_result(motorID, "set profile velocity", dxlCommRes, dxlError)
+        # Configure the motion profile before torque is enabled.
+        self._configure_motion_profile()
         time.sleep(.5)
         #enable torque
         self.enableTorque()
@@ -105,12 +112,147 @@ class MotorsSynced:
             return False
         return True
 
+    def _coerce_write_result(self, result):
+        if isinstance(result, tuple):
+            if len(result) >= 2:
+                return result[0], result[1]
+            if len(result) == 1:
+                return result[0], 0
+        return result, 0
+
+    def _reset_sync_handlers(self):
+        self.groupSyncWrite = GroupSyncWrite(
+            self.portHandler,
+            self.packetHandler,
+            self.ADDR_GOAL_POSITION,
+            self.LEN_GOAL_POS,
+        )
+        self.groupSyncRead = GroupSyncRead(
+            self.portHandler,
+            self.packetHandler,
+            self.ADDR_PRESENT_POSITION,
+            self.LEN_PRES_POS,
+        )
+        self.groupSyncReadTor = GroupSyncRead(
+            self.portHandler,
+            self.packetHandler,
+            self.ADDR_PRESENT_LOAD,
+            self.LEN_PRES_LOAD,
+        )
+
+    def _configure_motion_profile(self, motor_ids=None, include_drive_mode=True):
+        motor_ids = self.DXL_ID if motor_ids is None else motor_ids
+        for motorID in motor_ids:
+            if include_drive_mode:
+                dxlCommRes, dxlError = self.packetHandler.write1ByteTxRx(
+                    self.portHandler,
+                    motorID,
+                    self.ADDR_DRIVE_MODE,
+                    self.DRIVE_MODE,
+                )
+                self._log_motor_result(motorID, "set drive mode", dxlCommRes, dxlError)
+
+            dxlCommRes, dxlError = self.packetHandler.write4ByteTxRx(
+                self.portHandler,
+                motorID,
+                self.ADDR_PROFILE_ACCELERATION,
+                self.PROFILE_ACCELERATION,
+            )
+            self._log_motor_result(motorID, "set profile acceleration", dxlCommRes, dxlError)
+
+            dxlCommRes, dxlError = self.packetHandler.write4ByteTxRx(
+                self.portHandler,
+                motorID,
+                self.ADDR_PROFILE_VELOCITY,
+                self.PROFILE_VELOCITY,
+            )
+            self._log_motor_result(motorID, "set profile velocity", dxlCommRes, dxlError)
+
+    def _reopen_port(self):
+        try:
+            self.portHandler.closePort()
+        except Exception:
+            pass
+
+        time.sleep(0.2)
+
+        if not self.portHandler.openPort():
+            print("Motor recovery failed: could not reopen the DYNAMIXEL port.")
+            return False
+
+        if not self.portHandler.setBaudRate(self.BAUDRATE):
+            print("Motor recovery failed: could not restore the DYNAMIXEL baudrate.")
+            return False
+
+        self._reset_sync_handlers()
+        return True
+
+    def _decode_hardware_error_status(self, hardware_error):
+        bit_labels = {
+            0x01: "input voltage",
+            0x04: "overheating",
+            0x08: "encoder",
+            0x10: "electrical shock",
+            0x20: "overload",
+        }
+        decoded = [label for bit, label in bit_labels.items() if hardware_error & bit]
+        return decoded if decoded else [f"unknown(0x{hardware_error:02X})"]
+
+    def readHardwareErrorStatus(self, motorID):
+        hardwareError, dxlCommRes, dxlError = self.packetHandler.read1ByteTxRx(
+            self.portHandler,
+            motorID,
+            self.ADDR_HARDWARE_ERROR_STATUS,
+        )
+        if not self._log_motor_result(motorID, "read hardware error status", dxlCommRes, dxlError):
+            return None
+        return hardwareError
+
+    def _attempt_bus_recovery(self, context, motor_ids=None):
+        if self._recovery_in_progress:
+            print(f"Motor recovery already running; skipping nested recovery during {context}.")
+            return False
+
+        self._recovery_in_progress = True
+        try:
+            print(f"Attempting DYNAMIXEL recovery after: {context}")
+
+            if not self._reopen_port():
+                return False
+
+            target_ids = list(self.DXL_ID if motor_ids is None else motor_ids)
+            motors_to_reboot = []
+
+            for motorID in target_ids:
+                hardware_error = self.readHardwareErrorStatus(motorID)
+                if hardware_error is None:
+                    continue
+                if hardware_error != 0:
+                    decoded = ", ".join(self._decode_hardware_error_status(hardware_error))
+                    print(
+                        f"Motor {motorID} latched hardware error status "
+                        f"0x{hardware_error:02X} ({decoded}). Rebooting."
+                    )
+                    motors_to_reboot.append(motorID)
+
+            if not motors_to_reboot:
+                print("No latched hardware errors found; re-applying motor settings.")
+                self._configure_motion_profile(include_drive_mode=False)
+                self.enableTorque()
+                return True
+
+            recovered_any = False
+            for motorID in motors_to_reboot:
+                recovered_any = self.rebootMotor(motorID) or recovered_any
+
+            return recovered_any
+        finally:
+            self._recovery_in_progress = False
+
     
     def setMotorSpeed(self):
-         # setting motor velocity
-        for motorID in self.DXL_ID:
-            dxlCommRes, dxlError = self.packetHandler.write4ByteTxRx(self.portHandler, motorID, 112, 500) # change 500 to change motor velocity
-            self._log_motor_result(motorID, "set profile velocity", dxlCommRes, dxlError)
+         # Re-apply the configured trapezoidal/time-based profile values.
+        self._configure_motion_profile()
 
     def enableTorque(self):
         # enable motor torques to be able to move motors     
@@ -136,16 +278,23 @@ class MotorsSynced:
                     addParamRes = self.groupSyncWrite.addParam(motorID, setPosBytes)
                     if addParamRes != True: # if couldn't add motor
                         print("Motor %i groupSyncwrite addparam failed" % motorID)
-                        quit()
+                        self.groupSyncWrite.clearParam()
+                        self._attempt_bus_recovery(f"groupSyncWrite addParam failed for motor {motorID}", [motorID])
+                        return False
 
                 dxlCommRes = self.groupSyncWrite.txPacket()# write goal positions
                 self.groupSyncWrite.clearParam() # clears position storage
-                
+
                 if dxlCommRes != self.COMM_SUCCESS: # check if writing was a success
                         print("%s" % self.packetHandler.getTxRxResult(dxlCommRes))
-        except:
-            print('unable to send command position')
+                        self._attempt_bus_recovery("goal position sync write failed")
+                        return False
+                return True
+        except Exception as exc:
+            print(f'unable to send command position: {exc}')
             self.groupSyncWrite.clearParam() # clears position storage
+            self._attempt_bus_recovery("exception while writing goal positions")
+        return False
     
         
     def readPos(self):
@@ -154,9 +303,12 @@ class MotorsSynced:
             addParamRes = self.groupSyncRead.addParam(motorID) # add parameters to be read
             if addParamRes != True:
                 print("Motor %i groupSyncRead addparam failed" % motorID)
+                self.groupSyncRead.clearParam()
+                return self.last_good_motor_pos.copy()
                
 
         motorPos = []
+        unavailable_motors = []
 
 
         # read present pos
@@ -164,7 +316,8 @@ class MotorsSynced:
         if dxlCommRes != self.COMM_SUCCESS:
                 print("groupSyncRead txRxPacket failed: %s" % self.packetHandler.getTxRxResult(dxlCommRes))
                 self.groupSyncRead.clearParam()
-                return []
+                self._attempt_bus_recovery("position sync read failed")
+                return self.last_good_motor_pos.copy()
 
         # see if groupsync data available then get data
         for motorID in self.DXL_ID:
@@ -172,17 +325,25 @@ class MotorsSynced:
             #print(getDataRes) 
             if getDataRes != True:
                 print("Motor %i groupSyncRead getdata failed" % motorID)
+                unavailable_motors.append(motorID)
             else: # data is available
                 motorPos.append(self.groupSyncRead.getData(motorID, self.ADDR_PRESENT_POSITION, self.LEN_PRES_POS))
        
 
         self.groupSyncRead.clearParam() # clear out data
 
+        if unavailable_motors:
+            self._attempt_bus_recovery(
+                f"missing position feedback from motors {unavailable_motors}",
+                unavailable_motors,
+            )
+            return self.last_good_motor_pos.copy()
+
         # normalize motor positions
         normalizedMotorPos = [2*(pos-self.MIN_POS)/(self.MAX_POS-self.MIN_POS)-1 for pos in motorPos]
-        motorPos = normalizedMotorPos
+        self.last_good_motor_pos = normalizedMotorPos
 
-        return motorPos
+        return self.last_good_motor_pos.copy()
     
     def readVolt(self):
         self.groupSyncRead.clearParam() # clear parameters from storage
@@ -309,10 +470,21 @@ class MotorsSynced:
 
     def rebootMotor(self, motor):
         # method to reboot motors
-        
-        dxlCommRes = self.packetHandler.reboot(self.portHandler, motor)
-        if dxlCommRes != self.COMM_SUCCESS:
-                print("%s" % self.packetHandler.getTxRxResult(dxlCommRes))
+        reboot_result = self.packetHandler.reboot(self.portHandler, motor)
+        dxlCommRes, dxlError = self._coerce_write_result(reboot_result)
+        if not self._log_motor_result(motor, "reboot", dxlCommRes, dxlError):
+            return False
+
+        time.sleep(self.REBOOT_WAIT_SECONDS)
+        self._configure_motion_profile([motor])
+
+        dxlCommRes, dxlError = self.packetHandler.write1ByteTxRx(
+            self.portHandler,
+            motor,
+            self.ADDR_MX_TORQUE_ENABLE,
+            1,
+        )
+        return self._log_motor_result(motor, "re-enable torque after reboot", dxlCommRes, dxlError)
     
 
 if __name__ == '__main__':
