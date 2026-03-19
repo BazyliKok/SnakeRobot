@@ -39,8 +39,8 @@ class MotorsSynced:
         self.MAX_POS                        = float(3078) 
                         
         # set motor variables
-        self.BAUDRATE                       = 2000000 #57600 #2000000
-        self.PROTOCOL_VERSION               = 2.0 # make sure motors are on this protocol version
+        self.BAUDRATE                       = int(os.getenv("SNAKE_DXL_BAUDRATE", "2000000")) #57600 #2000000
+        self.PROTOCOL_VERSION               = float(os.getenv("SNAKE_DXL_PROTOCOL_VERSION", "2.0")) # make sure motors are on this protocol version
         self.DXL_ID                         = list(reversed([1,2,3,4,5,6,7]))
         #[0,2,3,4,5,6]# IDs for motors, have these match to IDs set in dynamixel software
         self.ADDR_MX_TORQUE_ENABLE          = 64 # this ADDR value changes for different dynamixel models: https://emanual.robotis.com/docs/en/dxl/
@@ -57,7 +57,7 @@ class MotorsSynced:
         self.LEN_PRES_VELOC                 = 4
         self.LEN_PRES_LOAD                  = 2
 
-        self.DEVICENAME                     = '/dev/ttyUSB1' # this changes with every device, in linux: '/dev/ttyUSB0'
+        self.DEVICENAME                     = os.getenv("SNAKE_DXL_DEVICE", '/dev/ttyUSB1') # this changes with every device, in linux: '/dev/ttyUSB0'
         self.portHandler                    = PortHandler(self.DEVICENAME)
         self.packetHandler                  = PacketHandler(self.PROTOCOL_VERSION)
 
@@ -70,7 +70,7 @@ class MotorsSynced:
         # If want to read velocity
         #self.groupSyncReadVel = GroupSyncRead(self.portHandler, self.packetHandler, self.ADDR_PRESENT_VELOC, self.LEN_PRES_POS)
 
-        self.groupSyncReadTor = GroupSyncRead(self.portHandler, self.packetHandler, self.ADDR_PRESENT_LOAD, self.LEN_PRES_POS) # for torque measurement
+        self.groupSyncReadTor = GroupSyncRead(self.portHandler, self.packetHandler, self.ADDR_PRESENT_LOAD, self.LEN_PRES_LOAD) # for torque measurement
 
 
         # open the port
@@ -90,45 +90,41 @@ class MotorsSynced:
         
         # setting motor velocity
         for motorID in self.DXL_ID:
-            self.packetHandler.write4ByteTxRx(self.portHandler, motorID, 112, 500)
+            dxlCommRes, dxlError = self.packetHandler.write4ByteTxRx(self.portHandler, motorID, 112, 500)
+            self._log_motor_result(motorID, "set profile velocity", dxlCommRes, dxlError)
         time.sleep(.5)
         #enable torque
         self.enableTorque()
+
+    def _log_motor_result(self, motorID, action, dxlCommRes, dxlError):
+        if dxlCommRes != self.COMM_SUCCESS:
+            print(f"Motor {motorID} {action} failed: {self.packetHandler.getTxRxResult(dxlCommRes)}")
+            return False
+        if dxlError != 0:
+            print(f"Motor {motorID} {action} packet error: {self.packetHandler.getRxPacketError(dxlError)}")
+            return False
+        return True
 
     
     def setMotorSpeed(self):
          # setting motor velocity
         for motorID in self.DXL_ID:
-            self.packetHandler.write4ByteTxRx(self.portHandler, motorID, 112, 500) # change 500 to change motor velocity
+            dxlCommRes, dxlError = self.packetHandler.write4ByteTxRx(self.portHandler, motorID, 112, 500) # change 500 to change motor velocity
+            self._log_motor_result(motorID, "set profile velocity", dxlCommRes, dxlError)
 
     def enableTorque(self):
         # enable motor torques to be able to move motors     
         for motorID in self.DXL_ID:
             dxlCommRes, dxlError = self.packetHandler.write1ByteTxRx(self.portHandler, motorID, self.ADDR_MX_TORQUE_ENABLE, 1) # enable torque on motor
-           
-            # if didn't succesffully enable torque
-            if dxlCommRes != self.COMM_SUCCESS: 
-                print("%s" % self.packetHandler.getTxRxResult(dxlCommRes))
-            if dxlError != 0: 
-                print("%s" % self.packetHandler.getRxPacketError(dxlError))
-                dxl_error_message, dxl_comm_result, dxl_error = self.packetHandler.read2ByteTxRx(self.portHandler, motorID, 70)
-                print(dxl_error_message)
-                print(dxl_error)
-            # if motor successfully connected
-            else:
-                 print("Dynamixel motor %i has been successfully connected" % motorID)
+            if self._log_motor_result(motorID, "enable torque", dxlCommRes, dxlError):
+                print("Dynamixel motor %i has been successfully connected" % motorID)
 
     
     def disableTorque(self): 
         # disable torques to lock motors    
         for motorID in self.DXL_ID:
             dxlCommRes, dxlError = self.packetHandler.write1ByteTxRx(self.portHandler, motorID, self.ADDR_MX_TORQUE_ENABLE, 0)
-            
-            # if didn't succesffully disable torque
-            if dxlCommRes != self.COMM_SUCCESS:
-                print("%s" % self.packetHandler.getTxRxResult(dxlCommRes))
-            elif dxlError != 0:
-                print("%s" % self.packetHandler.getRxPacketError(dxlError))
+            self._log_motor_result(motorID, "disable torque", dxlCommRes, dxlError)
           
     def writePos(self,setPositionsTo):
         # write positions to motors
@@ -166,7 +162,9 @@ class MotorsSynced:
         # read present pos
         dxlCommRes = self.groupSyncRead.txRxPacket()
         if dxlCommRes != self.COMM_SUCCESS:
-                print("%s" % self.packetHandler.getTxRxResult(dxlCommRes))
+                print("groupSyncRead txRxPacket failed: %s" % self.packetHandler.getTxRxResult(dxlCommRes))
+                self.groupSyncRead.clearParam()
+                return []
 
         # see if groupsync data available then get data
         for motorID in self.DXL_ID:
@@ -200,7 +198,9 @@ class MotorsSynced:
         # read present pos
         dxlCommRes = self.groupSyncRead.txRxPacket()
         if dxlCommRes != self.COMM_SUCCESS:
-                print("%s" % self.packetHandler.getTxRxResult(dxlCommRes))
+                print("groupSyncRead txRxPacket failed: %s" % self.packetHandler.getTxRxResult(dxlCommRes))
+                self.groupSyncRead.clearParam()
+                return []
 
         ADR = 144
         LEN = 2
@@ -240,7 +240,10 @@ class MotorsSynced:
         # read present pos
         dxlCommRes = self.groupSyncReadVel.txRxPacket()
         if dxlCommRes != self.COMM_SUCCESS:
-                print("%s" % self.packetHandler.getTxRxResult(dxlCommRes))
+                print("groupSyncReadVel txRxPacket failed: %s" % self.packetHandler.getTxRxResult(dxlCommRes))
+                self.groupSyncReadVel.clearParam()
+                lock.release()
+                return []
 
         # see if groupsync data available then get data
         for motorID in self.DXL_ID:
@@ -275,7 +278,10 @@ class MotorsSynced:
         # read present pos
         dxlCommRes = self.groupSyncReadTor.txRxPacket()
         if dxlCommRes != self.COMM_SUCCESS:
-                print("%s" % self.packetHandler.getTxRxResult(dxlCommRes))
+                print("groupSyncReadTor txRxPacket failed: %s" % self.packetHandler.getTxRxResult(dxlCommRes))
+                self.groupSyncReadTor.clearParam()
+                lock.release()
+                return []
 
         # see if groupsync data available then get data
         for motorID in self.DXL_ID:
