@@ -31,7 +31,7 @@ class Train():
     
         self._reward_scale = 1.0
         self.optimized_params = None
-        self._episode_length = 250 # number of timesteps per episode
+        self._episode_length = 175 # number of timesteps per episode
         self.episode_counter = None
         self.policy_action_warmup_episodes = 2  # full-random episodes before policy/random mixing starts
         self.training_update_warmup_episodes = 1  # collected episodes before SAC updates start
