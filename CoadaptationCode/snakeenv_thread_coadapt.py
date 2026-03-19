@@ -1,4 +1,4 @@
-import gymnasium
+﻿import gymnasium
 from gymnasium import spaces
 import numpy as np
 import motorssynced
@@ -131,7 +131,7 @@ class SnakeEnv(gymnasium.Env):
         self.starting_position_x = None
         self.progress_direction_z = -1
         self.targetPositionY = 19.5231
-        self.targetPositionZ = -90.0
+        self.targetPositionZ = -55.0
         self.x_drift_penalty_start = 15.0
         self.x_drift_penalty_full = 80.0
         self.x_drift_observation_scale = 80.0
