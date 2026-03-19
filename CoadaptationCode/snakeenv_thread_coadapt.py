@@ -60,14 +60,14 @@ class SnakeEnv(gymnasium.Env):
     # 0 = TPU with spikes, 1 = TPU without spikes,
     # 2 = PLA with spikes, 3 = PLA without spikes.
     current_design = [0, 0, 0]
-    current_terrain = 'floor'
     scale_types = {
         0: 'TPU_SPIKES',
         1: 'TPU_NO_SPIKES',
         2: 'PLA_SPIKES',
         3: 'PLA_NO_SPIKES',
     }
-    terrains = ['floor', 'carpet', 'cardboard', 'artificial_grass']
+    terrains = ['carpet', 'cardboard', 'artificial_grass']
+    current_terrain = terrains[0]
 
     # Discrete bounds for [head, body, tail] scale type ids.
     design_parameter_bounds = [(0,3), (0,3), (0,3)]
