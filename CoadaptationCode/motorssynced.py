@@ -58,8 +58,9 @@ class MotorsSynced:
         self.PROFILE_ACCELERATION           = int(os.getenv("SNAKE_DXL_PROFILE_ACCELERATION", "25"))
         self.PROFILE_VELOCITY               = int(os.getenv("SNAKE_DXL_PROFILE_VELOCITY", "100"))
         self.REBOOT_WAIT_SECONDS            = float(os.getenv("SNAKE_DXL_REBOOT_WAIT_S", "1.5"))
-        self.RESET_TIMEOUT_SECONDS          = float(os.getenv("SNAKE_DXL_RESET_TIMEOUT_S", "3.0"))
+        self.RESET_TIMEOUT_SECONDS          = float(os.getenv("SNAKE_DXL_RESET_TIMEOUT_S", "10.0"))
         self.RESET_POLL_INTERVAL_SECONDS    = float(os.getenv("SNAKE_DXL_RESET_POLL_INTERVAL_S", "0.05"))
+        self.RESET_POSITION_THRESHOLD       = int(os.getenv("SNAKE_DXL_RESET_THRESHOLD", "50"))
         self.last_good_motor_pos            = [0.0] * len(self.DXL_ID)
         self._recovery_in_progress          = False
         self._drive_mode_supported          = True
@@ -399,6 +400,8 @@ class MotorsSynced:
     def waitForTargetPositions(self, target_positions, timeout_s=None):
         timeout_s = self.RESET_TIMEOUT_SECONDS if timeout_s is None else timeout_s
         deadline = time.time() + timeout_s
+        last_positions = None
+        last_errors = None
 
         while time.time() < deadline:
             motorPos = self._read_positions_raw()
@@ -407,15 +410,28 @@ class MotorsSynced:
                 continue
 
             self._cache_last_good_positions(motorPos)
-            if all(
-                abs(curr_pos - target_pos) <= self.DXL_MOVING_STATUS_THRESHOLD
+            last_positions = motorPos
+            last_errors = [
+                abs(curr_pos - target_pos)
                 for curr_pos, target_pos in zip(motorPos, target_positions)
+            ]
+            if all(
+                error <= self.RESET_POSITION_THRESHOLD
+                for error in last_errors
             ):
                 return True
 
             time.sleep(self.RESET_POLL_INTERVAL_SECONDS)
 
-        print(f"Timed out waiting for motors to reach reset position {target_positions}.")
+        print(
+            f"Timed out waiting for motors to reach reset position {target_positions} "
+            f"within +/-{self.RESET_POSITION_THRESHOLD} counts after {timeout_s:.1f}s."
+        )
+        if last_positions is None:
+            print("No valid motor position samples were received during reset wait.")
+        else:
+            print(f"Last motor positions: {last_positions}")
+            print(f"Reset position errors: {last_errors}")
         self.reportHardwareErrorStatuses(context="after reset timeout")
         return False
 
