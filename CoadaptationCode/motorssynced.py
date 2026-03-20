@@ -294,7 +294,7 @@ class MotorsSynced:
             )
         return hardwareError
 
-    def _attempt_bus_recovery(self, context, motor_ids=None):
+    def _attempt_bus_recovery(self, context, motor_ids=None, force_reboot=False):
         if self._recovery_in_progress:
             print(f"Motor recovery already running; skipping nested recovery during {context}.")
             return False
@@ -312,6 +312,12 @@ class MotorsSynced:
             for motorID in target_ids:
                 hardware_error = self.readHardwareErrorStatus(motorID)
                 if hardware_error is None:
+                    if force_reboot:
+                        print(
+                            f"Motor {motorID} hardware status unavailable after '{context}'. "
+                            "Attempting reboot anyway."
+                        )
+                        motors_to_reboot.append(motorID)
                     continue
                 if hardware_error != 0:
                     print(
@@ -333,6 +339,13 @@ class MotorsSynced:
             return recovered_any
         finally:
             self._recovery_in_progress = False
+
+    def recoverFromFault(self, context, motor_ids=None, force_reboot=False):
+        return self._attempt_bus_recovery(
+            context,
+            motor_ids=motor_ids,
+            force_reboot=force_reboot,
+        )
 
     
     def setMotorSpeed(self):
@@ -375,7 +388,7 @@ class MotorsSynced:
         if dxlCommRes != self.COMM_SUCCESS:
             print("groupSyncRead txRxPacket failed: %s" % self.packetHandler.getTxRxResult(dxlCommRes))
             self.groupSyncRead.clearParam()
-            self._attempt_bus_recovery("position sync read failed")
+            self._attempt_bus_recovery("position sync read failed", force_reboot=True)
             return None
 
         for motorID in self.DXL_ID:
@@ -392,6 +405,7 @@ class MotorsSynced:
             self._attempt_bus_recovery(
                 f"missing position feedback from motors {unavailable_motors}",
                 unavailable_motors,
+                force_reboot=True,
             )
             return None
 
@@ -493,7 +507,11 @@ class MotorsSynced:
                     if addParamRes != True: # if couldn't add motor
                         print("Motor %i groupSyncwrite addparam failed" % motorID)
                         self.groupSyncWrite.clearParam()
-                        self._attempt_bus_recovery(f"groupSyncWrite addParam failed for motor {motorID}", [motorID])
+                        self._attempt_bus_recovery(
+                            f"groupSyncWrite addParam failed for motor {motorID}",
+                            [motorID],
+                            force_reboot=True,
+                        )
                         return False
 
                 dxlCommRes = self.groupSyncWrite.txPacket()# write goal positions
@@ -502,14 +520,14 @@ class MotorsSynced:
                 if dxlCommRes != self.COMM_SUCCESS: # check if writing was a success
                         print("%s" % self.packetHandler.getTxRxResult(dxlCommRes))
                         self.reportHardwareErrorStatuses(context="after failed goal position sync write")
-                        self._attempt_bus_recovery("goal position sync write failed")
+                        self._attempt_bus_recovery("goal position sync write failed", force_reboot=True)
                         return False
                 return True
             print(f"Requested motor positions out of bounds: {setPositionsTo}")
         except Exception as exc:
             print(f'unable to send command position: {exc}')
             self.groupSyncWrite.clearParam() # clears position storage
-            self._attempt_bus_recovery("exception while writing goal positions")
+            self._attempt_bus_recovery("exception while writing goal positions", force_reboot=True)
         return False
     
         

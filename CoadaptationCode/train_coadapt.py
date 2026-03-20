@@ -2,7 +2,7 @@ import json
 import gymnasium as gym
 import matplotlib.pyplot as plt
 from soft_actor_critic_coadapt import SoftActorCriticCoadapt
-from snakeenv_thread_coadapt import SnakeEnv
+from snakeenv_thread_coadapt import MotorFaultError, SnakeEnv
 import numpy as np
 from replaybuffercoadapt import CoadaptReplayBuffer
 import os
@@ -281,6 +281,47 @@ class Train():
 
         return tagged_candidates[0]
 
+    def _recover_motor_fault(self, phase, exc):
+        print(f"Motor fault during {phase}: {exc}")
+
+        recovered = False
+        try:
+            recovered = SnakeEnv.recoverMotorFault(
+                context=f"{phase}: {exc}",
+                force_reboot=True,
+            )
+        except Exception as recovery_exc:
+            print(f"Motor recovery handler raised an exception: {recovery_exc}")
+
+        try:
+            SnakeEnv.disableMotorTorque()
+        except Exception as disable_exc:
+            print(f"Failed to disable motor torque after recovery attempt: {disable_exc}")
+
+        return recovered
+
+    def _reset_env_with_motor_recovery(self, seed, phase, max_attempts=2):
+        last_exc = None
+
+        for attempt_idx in range(max_attempts):
+            try:
+                return self.env.reset(seed=seed)
+            except MotorFaultError as exc:
+                last_exc = exc
+                recovered = self._recover_motor_fault(
+                    f"{phase} reset attempt {attempt_idx + 1}/{max_attempts}",
+                    exc,
+                )
+                if not recovered:
+                    print("Motor recovery did not report success during reset retry.")
+                time.sleep(1.0)
+
+        print(
+            f"Skipping {phase} after {max_attempts} failed motor recovery attempts: "
+            f"{last_exc}"
+        )
+        return None, {'motor_fault': 1, 'motor_fault_message': str(last_exc)}
+
     def run(self, stopEvent, max_design_cycles_per_run=1):
         """ Runs Fast Evolution through Actor-Critic RL algorithm.
         Chunked execution: process up to max_design_cycles_per_run design cycles
@@ -293,13 +334,25 @@ class Train():
         while self.design_counter < self.design_cylces and completed_cycles < max_design_cycles_per_run:
             self._set_output_filenames()
 
-            if self.design_counter < self.num_init_designs:
-                self.initial_design_loop()
-                print(f'design counter at {self.design_counter}')
-                if self.design_counter == self.num_init_designs and self.optimized_params is None:
-                    self.first_train_op()
-            else:
-                self.train_loop()
+            try:
+                if self.design_counter < self.num_init_designs:
+                    self.initial_design_loop()
+                    print(f'design counter at {self.design_counter}')
+                    if self.design_counter == self.num_init_designs and self.optimized_params is None:
+                        self.first_train_op()
+                else:
+                    self.train_loop()
+            except Exception as exc:
+                self._recover_motor_fault(
+                    f"design cycle {self.design_counter}",
+                    exc,
+                )
+                print(
+                    f"Design cycle {self.design_counter} failed with an exception and "
+                    "will be skipped so training can continue."
+                )
+                self.design_counter += 1
+                self.episode_counter = 0
 
             completed_cycles += 1
 
@@ -353,13 +406,26 @@ class Train():
                 f"episode {episode_in_block + 1}/{self.training_terrain_block_size}). "
                 f"Place robot on this terrain before continuing reset."
             )
-            state, info = self.env.reset(seed=self.current_episode_seed)
+            state, info = self._reset_env_with_motor_recovery(
+                seed=self.current_episode_seed,
+                phase=f"training episode {self.episode_counter}",
+            )
+            if state is None:
+                print(
+                    f"Skipping training episode {self.episode_counter} because "
+                    "the robot could not be reset after recovery attempts."
+                )
+                self.episodeCumulativeRewards.append(0.0)
+                self.eachEpisodeCumuRewards.append([])
+                self.replay.terminate_episode()
+                return False
             state_dim = len(state)
             self.stateList = [[] for _ in range(state_dim)]
             steps = 0
             episodeRewards = 0
             episodeContRewards = []
             Done = False
+            motor_fault_ended_episode = False
             prev_action = None
             random_action_prob = self._random_action_probability()
             print(f'episode random action probability: {random_action_prob:.3f}')
@@ -407,7 +473,16 @@ class Train():
                     self.actionList[i].append(action[i])
                 
         
-                next_state, reward, terminated, truncated, info = self.env.step(action) # step the action, note: reward is scaled in environment
+                try:
+                    next_state, reward, terminated, truncated, info = self.env.step(action) # step the action, note: reward is scaled in environment
+                except MotorFaultError as exc:
+                    self._recover_motor_fault(
+                        f"training episode {self.episode_counter} step {step_number}",
+                        exc,
+                    )
+                    print("Ending current training episode early after motor recovery.")
+                    motor_fault_ended_episode = True
+                    break
 
 
                 
@@ -447,6 +522,8 @@ class Train():
 
             SnakeEnv.disableMotorTorque() # stop motors at the end of each episode
             print('disabled torque')
+            if motor_fault_ended_episode:
+                print('Episode terminated early because a motor fault was detected and recovery was triggered.')
 
 
                 
@@ -456,6 +533,7 @@ class Train():
 
             self.logData() # log data
             self.replay.terminate_episode() # run replay end sequence
+            return True
 
 
 
@@ -497,7 +575,12 @@ class Train():
                 self.design_counter,
                 self.episode_counter,
             )
-            self.env.reset(seed=self.current_design_optimization_seed)
+            reset_state, _ = self._reset_env_with_motor_recovery(
+                seed=self.current_design_optimization_seed,
+                phase=f"bootstrap design optimization design {self.design_counter}",
+            )
+            if reset_state is None:
+                print("Continuing bootstrap design optimization without a fresh reset because recovery failed.")
             
             self.optimized_params = [0, 0, 0]
             # or can: self.optimized_params = SnakeEnv.get_random_design()
@@ -568,9 +651,22 @@ class Train():
         
             
     def train_single_iteration(self):
-        
+        experience_collected = False
+
         self.replay.set_mode("species")
-        self.collect_training_experience() # collect data
+        try:
+            experience_collected = self.collect_training_experience() # collect data
+        except Exception as exc:
+            self._recover_motor_fault(
+                f"training episode {self.episode_counter} collection",
+                exc,
+            )
+            try:
+                self.replay.terminate_episode()
+            except Exception as replay_exc:
+                print(f"Failed to terminate replay episode after exception: {replay_exc}")
+            print("Skipping the rest of this training episode after an unexpected exception.")
+            experience_collected = False
         
         if self.design_counter >= 2: # only train population after certain number of designs, in this case 2
             train_pop = True
@@ -578,7 +674,7 @@ class Train():
             train_pop = False
         
         print('train single iteration check if training warmup is complete')
-        if self._should_train_updates():  # can start training after enough full episodes are collected
+        if experience_collected and self._should_train_updates():  # can start training after enough full episodes are collected
             print('training warmup complete')
             self.current_update_seed = self._seed_global_rngs(
                 'train_update',
@@ -667,11 +763,25 @@ class Train():
                     rollout_idx,
                 )
                 rollout_seeds.append(int(eval_seed))
-                state, _ = self.env.reset(seed=eval_seed)
+                state, _ = self._reset_env_with_motor_recovery(
+                    seed=eval_seed,
+                    phase=f"evaluation terrain {terrain} rollout {rollout_idx}",
+                )
+                if state is None:
+                    print(
+                        f"Skipping evaluation rollout {rollout_idx} on terrain '{terrain}' "
+                        "because reset recovery did not succeed."
+                    )
+                    SnakeEnv.disableMotorTorque()
+                    episode_returns.append(0.0)
+                    episode_lengths.append(0)
+                    episode_successes.append(0)
+                    continue
                 done = False
                 steps = 0
                 cumulative_reward = 0.0
                 success = False
+                rollout_faulted = False
 
                 while (not done) and steps < self._episode_length:
                     try:
@@ -679,7 +789,16 @@ class Train():
                     except TypeError:
                         action, _ = policy.get_action(state)
 
-                    next_state, reward, terminated, truncated, _ = self.env.step(action)
+                    try:
+                        next_state, reward, terminated, truncated, _ = self.env.step(action)
+                    except MotorFaultError as exc:
+                        self._recover_motor_fault(
+                            f"evaluation terrain {terrain} rollout {rollout_idx} step {steps + 1}",
+                            exc,
+                        )
+                        print("Ending evaluation rollout early after motor recovery.")
+                        rollout_faulted = True
+                        break
                     cumulative_reward += float(reward)
                     steps += 1
                     success = success or bool(terminated)
@@ -687,6 +806,8 @@ class Train():
                     state = next_state
 
                 SnakeEnv.disableMotorTorque()
+                if rollout_faulted:
+                    print('Evaluation rollout terminated early because a motor fault was detected.')
                 episode_returns.append(float(cumulative_reward))
                 episode_lengths.append(int(steps))
                 episode_successes.append(int(success))

@@ -26,6 +26,9 @@ gymnasium.envs.register(
 )
 global optiPos, motorPos
 
+class MotorFaultError(RuntimeError):
+    pass
+
 class SnakeEnv(gymnasium.Env):
     # static variables so can be accessed between static and non static methods
     optiPosition = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -468,7 +471,7 @@ class SnakeEnv(gymnasium.Env):
             SnakeEnv.motorLock.release()
 
         if not reset_ok:
-            raise RuntimeError(
+            raise MotorFaultError(
                 "Failed to reset motors to the start position. "
                 "See the hardware error status code output above."
             )
@@ -619,6 +622,12 @@ class SnakeEnv(gymnasium.Env):
         finally:
             SnakeEnv.motorLock.release()
 
+        if not write_ok:
+            raise MotorFaultError(
+                f"Failed to write motor command {posTo}. "
+                "Automatic DYNAMIXEL recovery/reboot was attempted."
+            )
+
         time.sleep(.3) # sleep to allow motors to get to position
         return write_ok
 
@@ -716,6 +725,19 @@ class SnakeEnv(gymnasium.Env):
             SnakeEnv.motorLock.release()
         #time.sleep(.005)
         return   
+
+    @staticmethod
+    def recoverMotorFault(context, motor_ids=None, force_reboot=True):
+        SnakeEnv._ensure_hardware_initialized()
+        SnakeEnv.motorLock.acquire()
+        try:
+            return SnakeEnv.motors.recoverFromFault(
+                context=context,
+                motor_ids=motor_ids,
+                force_reboot=force_reboot,
+            )
+        finally:
+            SnakeEnv.motorLock.release()
 
     @staticmethod
     def set_new_design(design):
