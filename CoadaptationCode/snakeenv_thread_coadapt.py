@@ -455,19 +455,25 @@ class SnakeEnv(gymnasium.Env):
    
 
 
-        SnakeEnv.motorLock.acquire()
-        SnakeEnv.motors.setMotorSpeed() # set speed here so if motor torques and reset power the speed gets reset
-        time.sleep(.5)
-        SnakeEnv.motorLock.release()
-        # time.sleep(.5)
-        print('motor speeds set')
-
-
         # choose starting position of robot motors
         #startPos = random.sample(range(self.motorMin, self.motorMax), 7)
-        startPos = [2048, 2048, 2048, 2048, 2048, 2048, 2048]
-        self.writeAction(startPos)
-        SnakeEnv.disableMotorTorque()
+        startPos = [2048] * len(SnakeEnv.motors.DXL_ID)
+        SnakeEnv.motorLock.acquire()
+        try:
+            reset_ok = SnakeEnv.motors.resetMotorPositions(
+                startPos,
+                disable_after_reset=True,
+            )
+        finally:
+            SnakeEnv.motorLock.release()
+
+        if not reset_ok:
+            raise RuntimeError(
+                "Failed to reset motors to the start position. "
+                "See the hardware error status code output above."
+            )
+
+        print('motors reset to start pose')
         # choose new goal position? could randomize target position?
         # self.targetPosition = 
         
@@ -608,10 +614,13 @@ class SnakeEnv(gymnasium.Env):
         posTo = actionToWrite
         print('POSITION TO', posTo)
         SnakeEnv.motorLock.acquire()
-        SnakeEnv.motors.writePos(posTo)
-        SnakeEnv.motorLock.release()
+        try:
+            write_ok = SnakeEnv.motors.writePos(posTo)
+        finally:
+            SnakeEnv.motorLock.release()
 
         time.sleep(.3) # sleep to allow motors to get to position
+        return write_ok
 
 
     def getTorque(self):
