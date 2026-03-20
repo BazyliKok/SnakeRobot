@@ -62,6 +62,7 @@ class MotorsSynced:
         self.RESET_POLL_INTERVAL_SECONDS    = float(os.getenv("SNAKE_DXL_RESET_POLL_INTERVAL_S", "0.05"))
         self.last_good_motor_pos            = [0.0] * len(self.DXL_ID)
         self._recovery_in_progress          = False
+        self._drive_mode_supported          = True
 
         self.LEN_GOAL_POS                   = 4 # data byte length
         self.LEN_PRES_POS                   = 4
@@ -204,14 +205,21 @@ class MotorsSynced:
         motor_ids = self.DXL_ID if motor_ids is None else motor_ids
         success = True
         for motorID in motor_ids:
-            if include_drive_mode:
+            if include_drive_mode and self._drive_mode_supported:
                 dxlCommRes, dxlError = self.packetHandler.write1ByteTxRx(
                     self.portHandler,
                     motorID,
                     self.ADDR_DRIVE_MODE,
                     self.DRIVE_MODE,
                 )
-                success = self._log_motor_result(motorID, "set drive mode", dxlCommRes, dxlError) and success
+                if dxlCommRes == self.COMM_SUCCESS and dxlError == 0x07:
+                    print(
+                        f"Motor {motorID} drive mode address {self.ADDR_DRIVE_MODE} "
+                        "is not supported on this model. Skipping future drive mode writes."
+                    )
+                    self._drive_mode_supported = False
+                else:
+                    success = self._log_motor_result(motorID, "set drive mode", dxlCommRes, dxlError) and success
 
             dxlCommRes, dxlError = self.packetHandler.write4ByteTxRx(
                 self.portHandler,
