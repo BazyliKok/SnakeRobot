@@ -136,10 +136,9 @@ class MotorsSynced:
 
         if dxlError != 0:
             print(
-                f"Motor {motorID}{message_context} hardware status read packet error "
+                f"Motor {motorID}{message_context} hardware status packet flags "
                 f"0x{dxlError:02X}: {self.packetHandler.getRxPacketError(dxlError)}"
             )
-            return None
 
         print(
             f"Motor {motorID}{message_context} hardware error status code: "
@@ -270,14 +269,20 @@ class MotorsSynced:
 
     def readHardwareErrorStatus(self, motorID):
         hardwareError, dxlCommRes, dxlError = self._read_hardware_error_status_raw(motorID)
-        if not self._log_motor_result(
-            motorID,
-            "read hardware error status",
-            dxlCommRes,
-            dxlError,
-            include_hardware_status=False,
-        ):
+        if dxlCommRes != self.COMM_SUCCESS:
+            self._log_motor_result(
+                motorID,
+                "read hardware error status",
+                dxlCommRes,
+                dxlError,
+                include_hardware_status=False,
+            )
             return None
+        if dxlError != 0:
+            print(
+                f"Motor {motorID} read hardware error status packet flags "
+                f"0x{dxlError:02X}: {self.packetHandler.getRxPacketError(dxlError)}"
+            )
         return hardwareError
 
     def _attempt_bus_recovery(self, context, motor_ids=None):
