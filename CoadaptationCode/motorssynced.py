@@ -451,8 +451,25 @@ class MotorsSynced:
         motion_profile_ok = self.setMotorSpeed()
         torque_enabled = self.enableTorque()
         if not (motion_profile_ok and torque_enabled):
-            self.reportHardwareErrorStatuses(context="during reset setup")
-            return False
+            status_map = self.reportHardwareErrorStatuses(context="during reset setup")
+            latched_error_motors = [
+                motorID
+                for motorID, hardware_error in status_map.items()
+                if hardware_error not in (None, 0)
+            ]
+
+            if latched_error_motors:
+                print(
+                    f"Attempting targeted reset recovery for motors with latched errors: "
+                    f"{latched_error_motors}"
+                )
+                if self._attempt_bus_recovery("reset setup hardware fault", latched_error_motors):
+                    print("Retrying reset after targeted motor recovery.")
+                    motion_profile_ok = self.setMotorSpeed()
+                    torque_enabled = self.enableTorque()
+
+            if not (motion_profile_ok and torque_enabled):
+                return False
 
         if not self.writePos(target_positions):
             self.reportHardwareErrorStatuses(context="after failed reset command")
