@@ -17,7 +17,7 @@ def _fmt_pos(vec):
 
 def main():
     parser = argparse.ArgumentParser(description="List visible OptiTrack rigid bodies")
-    parser.add_argument("--server", default=os.getenv("OPTITRACK_SERVER_IP", "10.0.10.04"))
+    parser.add_argument("--server", default=os.getenv("OPTITRACK_SERVER_IP","10.0.10.4"))
     parser.add_argument(
         "--frames",
         type=int,
