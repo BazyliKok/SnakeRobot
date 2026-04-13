@@ -589,7 +589,7 @@ class Train():
             q_network = self.rl_alg.get_q_network(self.networks['population'])
             policy_network = self.rl_alg.get_policy_network(self.networks['population'])
             self.cost, self.optimized_params = self.do_alg.optimize_design(design=self.optimized_params, q_network=q_network, policy_network=policy_network)
-            self.optimized_params = list(self.optimized_params)
+            self.optimized_params = SnakeEnv._coerce_design_vector(self.optimized_params)
             print('OPTIMIZED PARAM NEW DESIGN: ', self.optimized_params)
             print('COST: ', self.cost)
         
@@ -636,7 +636,7 @@ class Train():
             q_network = self.rl_alg.get_q_network(self.networks['population'])
             policy_network = self.rl_alg.get_policy_network(self.networks['population'])
             self.cost, self.optimized_params = self.do_alg.optimize_design(design=self.optimized_params, q_network=q_network, policy_network=policy_network)
-            self.optimized_params = list(self.optimized_params)
+            self.optimized_params = SnakeEnv._coerce_design_vector(self.optimized_params)
             print('NEW DESIGN PARAMETERS: ',self.optimized_params)
             print('COST: ', self.cost)
         #else: # randomize next design
@@ -951,12 +951,18 @@ class Train():
         torch.save(self.rl_alg._pop_qf1_target, os.path.join(results_dir, f'pop_qf1_tar_{checkpoint_prefix}_{self.results_tag}.pt'))
         torch.save(self.rl_alg._pop_qf2_target, os.path.join(results_dir, f'pop_qf2_tar_{checkpoint_prefix}_{self.results_tag}.pt'))
 
-        
+        optimized_params = getattr(self, 'optimized_params', None)
+        if optimized_params is not None:
+            optimized_params = SnakeEnv._coerce_design_vector(optimized_params)
+
         metadata = {
             'seed': int(self.seed),
             'design_counter': self.design_counter,
             'episode_counter': self.episode_counter,
-            'optimized_params': getattr(self, 'optimized_params', None),
+            'optimized_params': optimized_params,
+            'design_parameter_options': [int(option) for option in SnakeEnv.design_parameter_options],
+            'observation_dim': int(np.prod(self.env.observation_space.shape)),
+            'action_dim': int(np.prod(self.env.action_space.shape)),
             'training_terrain_block_order': list(self.training_terrain_block_order),
             'training_episode_schedule': list(self.training_episode_schedule),
             'training_schedule_design_counter': self.training_schedule_design_counter,
@@ -1020,6 +1026,8 @@ class Train():
             self.design_counter = metadata['design_counter']
             self.episode_counter = metadata['episode_counter']
             self.optimized_params = metadata.get('optimized_params', None)
+            if self.optimized_params is not None:
+                self.optimized_params = SnakeEnv._coerce_design_vector(self.optimized_params)
             self.training_terrain_block_order = metadata.get('training_terrain_block_order', [])
             self.training_episode_schedule = metadata.get('training_episode_schedule', [])
             self.training_schedule_design_counter = metadata.get(
@@ -1106,6 +1114,26 @@ class Train():
     def _restore_replay_buffer(self, buffer, data):
         max_size = int(data.get("_max_replay_buffer_size", buffer._max_replay_buffer_size))
         size = int(data.get("_size", 0))
+        saved_observation_dim = data.get("_observation_dim")
+        saved_action_dim = data.get("_action_dim")
+        if saved_observation_dim is None and "observations" in data:
+            saved_observation_shape = np.shape(data["observations"])
+            if len(saved_observation_shape) > 1:
+                saved_observation_dim = saved_observation_shape[1]
+        if saved_action_dim is None and "actions" in data:
+            saved_action_shape = np.shape(data["actions"])
+            if len(saved_action_shape) > 1:
+                saved_action_dim = saved_action_shape[1]
+
+        saved_observation_dim = int(saved_observation_dim or buffer._observation_dim)
+        saved_action_dim = int(saved_action_dim or buffer._action_dim)
+        if saved_observation_dim != buffer._observation_dim or saved_action_dim != buffer._action_dim:
+            raise ValueError(
+                "Replay buffer shape mismatch: "
+                f"saved obs/action dims {saved_observation_dim}/{saved_action_dim}, "
+                f"current obs/action dims {buffer._observation_dim}/{buffer._action_dim}. "
+                "Start with a fresh replay buffer or migrate the saved replay before resuming."
+            )
 
         buffer._observations = np.zeros((max_size, buffer._observation_dim))
         buffer._actions = np.zeros((max_size, buffer._action_dim))
@@ -1139,8 +1167,8 @@ class Train():
         buffer._size = size
         buffer._replace = data.get("_replace", buffer._replace)
         buffer._max_replay_buffer_size = max_size
-        buffer._observation_dim = data.get("_observation_dim", buffer._observation_dim)
-        buffer._action_dim = data.get("_action_dim", buffer._action_dim)
+        buffer._observation_dim = saved_observation_dim
+        buffer._action_dim = saved_action_dim
 
     def save_replay(self, filepath):
         """Save full coadaptation replay state to disk."""
