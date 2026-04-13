@@ -202,6 +202,11 @@ class SnakeEnv(gymnasium.Env):
 
     def _normalize_motor_positions(self, motor_positions):
         motor_positions = np.asarray(motor_positions, dtype=np.float32)
+        # MotorsSynced.readPos already returns normalized feedback.
+        if motor_positions.size and np.all(np.isfinite(motor_positions)):
+            if np.max(np.abs(motor_positions)) <= 1.0:
+                return np.clip(motor_positions, -1.0, 1.0)
+
         motor_span = max(self.motorMax - self.motorMin, 1)
         normalized = 2.0 * (motor_positions - self.motorMin) / motor_span - 1.0
         return np.clip(normalized, -1.0, 1.0)
