@@ -70,7 +70,7 @@ class Train():
 
         self.eachEpisodeCumuRewards = []
 
-        self.num_init_designs = 7 # number of initial design cycles
+        self.num_init_designs = len(SnakeEnv.init_design_parameters) # number of initial design cycles
         self.seed = int(os.getenv('SNAKE_EXPERIMENT_SEED', '12345'))
         self.eval_episodes_per_terrain = max(1, int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '5')))
         self.eval_robustness_lambda = 0.5
@@ -198,9 +198,9 @@ class Train():
 
     def _set_output_filenames(self):
         self.date = datetime.now().strftime("%Y_%m_%d")
-        name = "Rewards_Design{}_{}".format(str(self.design_counter), self.results_tag)
+        name = "Rewards_DesignCycle{}_{}".format(str(self.design_counter), self.results_tag)
         self.filename = self.date+name
-        name = "Losses_Design{}_{}".format(str(self.design_counter), self.results_tag)
+        name = "Losses_DesignCycle{}_{}".format(str(self.design_counter), self.results_tag)
         self.lossFilename = self.date+name
 
     def _checkpoint_results_dir(self):
@@ -250,7 +250,7 @@ class Train():
         self.training_terrain_block_order, self.training_episode_schedule = self._build_randomized_training_schedule()
         self.training_schedule_design_counter = self.design_counter
         print(
-            f"Design {self.design_counter} terrain block order: "
+            f"Design cycle {self.design_counter} terrain block order: "
             f"{' -> '.join(self.training_terrain_block_order)}"
         )
 
@@ -577,12 +577,12 @@ class Train():
             )
             reset_state, _ = self._reset_env_with_motor_recovery(
                 seed=self.current_design_optimization_seed,
-                phase=f"bootstrap design optimization design {self.design_counter}",
+                phase=f"bootstrap design optimization design cycle {self.design_counter}",
             )
             if reset_state is None:
                 print("Continuing bootstrap design optimization without a fresh reset because recovery failed.")
             
-            self.optimized_params = [0, 0, 0]
+            self.optimized_params = [SnakeEnv.design_parameter_options[0]] * len(SnakeEnv.design_parameter_bounds)
             # or can: self.optimized_params = SnakeEnv.get_random_design()
           
 
@@ -871,9 +871,9 @@ class Train():
             'Training_Schedule_Seed': int(self.current_schedule_seed) if self.current_schedule_seed is not None else None,
             'Design_Counter': int(self.design_counter),
             'Episode_Counter': int(self.episode_counter),
-            'Scale_Head': int(SnakeEnv.get_current_design()[0]),
-            'Scale_Body': int(SnakeEnv.get_current_design()[1]),
-            'Scale_Tail': int(SnakeEnv.get_current_design()[2]),
+            'Design_Head': int(SnakeEnv.get_current_design()[0]),
+            'Design_Body': int(SnakeEnv.get_current_design()[1]),
+            'Design_Tail': int(SnakeEnv.get_current_design()[2]),
             'Training_Episodes_Per_Design': int(self.episode_iterations),
             'Training_Terrain_Block_Size': int(self.training_terrain_block_size),
             'Training_Terrain_Block_Order': '|'.join(self.training_terrain_block_order),
@@ -922,7 +922,7 @@ class Train():
         }
         detail_json_path = os.path.join(
             results_dir,
-            f'{self.date}_Design{self.design_counter}_ep{self.episode_counter}_eval_summary.json'
+            f'{self.date}_DesignCycle{self.design_counter}_ep{self.episode_counter}_eval_summary.json'
         )
         with open(detail_json_path, 'w') as f:
             json.dump(detail_payload, f, indent=2, allow_nan=False)
@@ -936,7 +936,7 @@ class Train():
 
         results_dir = self._checkpoint_results_dir()
         os.makedirs(results_dir, exist_ok=True)
-        checkpoint_prefix = f'{self.date}_Design{self.design_counter}_ep{self.episode_counter}'
+        checkpoint_prefix = f'{self.date}_DesignCycle{self.design_counter}_ep{self.episode_counter}'
 
         torch.save(self.rl_alg._ind_policy, os.path.join(results_dir, f'ind_policy_{checkpoint_prefix}_{self.results_tag}.pt'))
         torch.save(self.rl_alg._ind_qf1, os.path.join(results_dir, f'ind_qf1_{checkpoint_prefix}_{self.results_tag}.pt'))
@@ -972,9 +972,9 @@ class Train():
         with open(os.path.join(results_dir, f'{checkpoint_prefix}_metadata_{self.results_tag}.json'), 'w') as f:
             json.dump(metadata, f)
 
-        self.save_replay(os.path.join(results_dir, f'replay_{self.date}_Design{self.design_counter}_{self.results_tag}.pt'))
+        self.save_replay(os.path.join(results_dir, f'replay_{self.date}_DesignCycle{self.design_counter}_{self.results_tag}.pt'))
 
-        print(f"saved networks for design {self.design_counter} and episode {self.episode_counter}")    
+        print(f"saved networks for design cycle {self.design_counter} and episode {self.episode_counter}")
 
     def load_networks(self, base_path, checkpoint_prefix):
         self.rl_alg._ind_policy.load_state_dict(torch.load(
@@ -1260,9 +1260,9 @@ class Train():
         rewardDF['Terrain_ID'] = [self.current_training_terrain_id] * len(self.timesteps)
         rewardDF['Terrain_Block_Index'] = [self.current_training_block_index] * len(self.timesteps)
         rewardDF['Episode_In_Terrain_Block'] = [self.current_training_episode_in_block] * len(self.timesteps)
-        rewardDF['Scale_Head'] = [int(design[0])] * len(self.timesteps)
-        rewardDF['Scale_Body'] = [int(design[1])] * len(self.timesteps)
-        rewardDF['Scale_Tail'] = [int(design[2])] * len(self.timesteps)
+        rewardDF['Design_Head'] = [int(design[0])] * len(self.timesteps)
+        rewardDF['Design_Body'] = [int(design[1])] * len(self.timesteps)
+        rewardDF['Design_Tail'] = [int(design[2])] * len(self.timesteps)
 
         # log state variablesmotor_and_coadaptation/CoadaptationCode/train_coadapt.py
         for motor_idx, motor_actions in enumerate(self.actionList):
@@ -1334,7 +1334,7 @@ if __name__ == '__main__':
     # if resuming from a checkpoint:
     base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results_bazyli')
     #change name
-    checkpoint_prefix = "2025_06_03_Design0_ep30"
+    checkpoint_prefix = "2025_06_03_DesignCycle0_ep30"
 
     #set to false if new training starts
     resuming_from_checkpoint = False 

@@ -6,19 +6,15 @@ from replaybuffercoadapt import CoadaptReplayBuffer
 from snakeenv_thread_coadapt import SnakeEnv
 import rlkit.torch.pytorch_util as ptu
 import numpy as np
-from gymnasium import spaces
 
 
 class WrappedSnakeEnv(SnakeEnv):
-    def __init__(self, design_dim=4):
+    def __init__(self, design_dim=None):
         super().__init__()
-        base_dim = self.observation_space.shape[0]
-        self._design_dim = design_dim
-        self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
-            shape=(15,),
-            dtype=np.float32
+        self._design_dim = (
+            len(SnakeEnv.design_parameter_bounds)
+            if design_dim is None
+            else design_dim
         )
 
 
@@ -91,7 +87,7 @@ REPLAY_PATHS = [
     "replay/replay_2025_06_16_Design5_foam.pt",
 ]
 
-env = WrappedSnakeEnv(design_dim=4)
+env = WrappedSnakeEnv()
 
 networks = SoftActorCriticCoadapt.create_networks(env)
 
@@ -103,7 +99,7 @@ pop_replay = CoadaptReplayBuffer(
 )
 
 episode_length = 175
-design_dim = 4
+design_dim = len(SnakeEnv.design_parameter_bounds)
 
 for path in REPLAY_PATHS:
     resolved_path, replay_payload = _load_replay_buffer(path)

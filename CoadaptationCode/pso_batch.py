@@ -25,7 +25,7 @@ class PSO_batch(Design_Optimization):
             initial_state = self._replay.random_batch(self._state_batch_size)['observations']
             self._replay.set_mode('start')
 
-        design_dim = len(design)
+        design_dim = len(SnakeEnv.design_parameter_bounds)
         state_dim = initial_state.shape[1]
         design_feature_dim = len(SnakeEnv.config_numpy)
         design_idx = SnakeEnv.get_design_dimensions()
@@ -35,9 +35,19 @@ class PSO_batch(Design_Optimization):
 
         lower_bounds = np.array([l for l, _ in SnakeEnv.design_parameter_bounds], dtype=np.float32)
         upper_bounds = np.array([u for _, u in SnakeEnv.design_parameter_bounds], dtype=np.float32)
+        design_options = np.asarray(SnakeEnv.design_parameter_options, dtype=np.float32)
 
         def _discretize_design(x):
-            return np.clip(np.rint(x), lower_bounds, upper_bounds).astype(np.float32)
+            values = np.asarray(x, dtype=np.float32).reshape(-1)[:design_dim]
+            if len(values) < design_dim:
+                values = np.pad(
+                    values,
+                    (0, design_dim - len(values)),
+                    constant_values=design_options[0],
+                )
+            values = np.clip(values, lower_bounds, upper_bounds)
+            nearest_idx = np.argmin(np.abs(values[:, None] - design_options[None, :]), axis=1)
+            return design_options[nearest_idx].astype(np.float32)
 
         def _inject_design(observation_batch, x_design):
             updated = observation_batch.copy()
@@ -141,10 +151,11 @@ class PSO_batch(Design_Optimization):
         # https://pyswarms.readthedocs.io/en/latest/api/pyswarms.single.html
         options = {'c1': 0.5, 'c2': 0.3, 'w':0.9}
 
-        optimizer = ps.single.GlobalBestPSO(n_particles=700, dimensions=len(design), bounds=bounds, options=options)
+        optimizer = ps.single.GlobalBestPSO(n_particles=700, dimensions=design_dim, bounds=bounds, options=options)
         
         # Perform optimization
         cost, new_design = optimizer.optimize(f_qval, print_step=100, iters=5, verbose=3) #, n_processes=2) # iter was 250
+        new_design = _discretize_design(new_design)
         print('OPTIMIZED')
         return cost, new_design
 

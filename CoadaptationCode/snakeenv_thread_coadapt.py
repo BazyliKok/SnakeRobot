@@ -53,59 +53,48 @@ class SnakeEnv(gymnasium.Env):
     '''
        Robot has 7 motors and 8 snake segments
        Action Space: 7
-       Observation Space: 4 normalized motion features + 7 normalized motors + 12 one-hot design features
+       Observation Space: 4 normalized motion features + 7 normalized motors + 9 one-hot design features
     '''
 
     # setting up design framework
-    #TODO: make it 1.80 for 1 segment
-
-    # Design vector encodes the scale type used on [head, body, tail].
-    # 0 = TPU with spikes, 1 = TPU without spikes,
-    # 2 = PLA with spikes, 3 = PLA without spikes.
-    current_design = [0, 0, 0]
-    scale_types = {
-        0: 'TPU_SPIKES',
-        1: 'TPU_NO_SPIKES',
-        2: 'PLA_SPIKES',
-        3: 'PLA_NO_SPIKES',
+    # Design vector encodes the design type used on [head, body, tail].
+    # Valid design IDs are the physical Design 2, Design 5, and Design 7 variants.
+    design_parameter_options = [2, 5, 7]
+    current_design = [2, 2, 2]
+    design_types = {
+        2: 'DESIGN_2',
+        5: 'DESIGN_5',
+        7: 'DESIGN_7',
     }
     terrains = ['carpet', 'cardboard', 'artificial_grass']
     current_terrain = terrains[0]
 
-    # Discrete bounds for [head, body, tail] scale type ids.
-    design_parameter_bounds = [(0,3), (0,3), (0,3)]
+    # Bounds are continuous for PSO, but values are snapped to the valid design IDs above.
+    design_parameter_bounds = [
+        (min(design_parameter_options), max(design_parameter_options)),
+        (min(design_parameter_options), max(design_parameter_options)),
+        (min(design_parameter_options), max(design_parameter_options)),
+    ]
 
-    
-    """
-    init_design_parameters = [
-            [1, 1, 1, 1, 1, 1],
-            [.5, .5, .5, .5, .5, .5],
-            [.5, 1, .5, 1, .5, 1],
-            [.75, .5, .75, .5, 1, 1]
-            ] # NOTE: Change these depending on the design I am going to use
-    
-    init_design_parameters = [
-        [1.80] * 8,
-        [.60] * 8,
-        [2.70] * 8,
-        [1.80, .60, 2.70, 1.80, .60, 2.70, 1.80,.60,],
-        [2.653, 1.280, 2.385, 3.191, 1.485, 2.175, .542],
+    _design_id_to_index = dict(
+        zip(design_parameter_options, range(len(design_parameter_options)))
+    )
 
-    # ] # NOTE: Change these depending on the design I am going to use
-    """
-        # Initial symmetric and asymmetric scale-distribution seeds.
+    # Initial symmetric and asymmetric design-distribution seeds.
     init_design_parameters = [
-        [0, 0, 0],  # symmetric: TPU spikes everywhere
-        [1, 1, 1],  # symmetric: TPU no spikes
-        [2, 2, 2],  # symmetric: PLA spikes
-        [3, 3, 3],  # symmetric: PLA no spikes
-        [0, 1, 2],  # asymmetric
-        [2, 0, 3],  # asymmetric
-        [3, 1, 0],  # asymmetric
+        [2, 2, 2],  # symmetric: Design 2 everywhere
+        [5, 5, 5],  # symmetric: Design 5 everywhere
+        [7, 7, 7],  # symmetric: Design 7 everywhere
+        [2, 5, 7],  # asymmetric
+        [2, 7, 5],  # asymmetric
+        [5, 2, 7],  # asymmetric
+        [7, 5, 2],  # asymmetric
     ]
 
     design_slot_names = ['Head', 'Body', 'Tail']
-    config_numpy = np.eye(len(scale_types), dtype=np.float32)[current_design].reshape(-1)
+    config_numpy = np.eye(len(design_parameter_options), dtype=np.float32)[
+        list(map(_design_id_to_index.__getitem__, current_design))
+    ].reshape(-1)
     base_feature_dim = 11
     design_dims = list(range(base_feature_dim, base_feature_dim + len(config_numpy)))
     print('design dimensions!', design_dims)
@@ -746,30 +735,50 @@ class SnakeEnv(gymnasium.Env):
 
     @staticmethod
     def set_new_design(design):
-        # Keep design ids in [0..3] and integer-coded.
-        rounded = [int(np.clip(np.round(v), 0, 3)) for v in design]
-        SnakeEnv.current_design = rounded
-        SnakeEnv.config_numpy = SnakeEnv.encode_design_vector(rounded)
+        snapped = SnakeEnv._coerce_design_vector(design)
+        SnakeEnv.current_design = snapped
+        SnakeEnv.config_numpy = SnakeEnv.encode_design_vector(snapped)
+
+    @staticmethod
+    def _coerce_design_id(value):
+        options = np.asarray(SnakeEnv.design_parameter_options, dtype=np.float32)
+        try:
+            numeric_value = float(np.asarray(value).reshape(-1)[0])
+        except (TypeError, ValueError, IndexError):
+            return int(options[0])
+        if not np.isfinite(numeric_value):
+            return int(options[0])
+        return int(options[np.argmin(np.abs(options - numeric_value))])
+
+    @staticmethod
+    def _coerce_design_vector(design):
+        slot_count = len(SnakeEnv.design_parameter_bounds)
+        values = np.asarray(design).reshape(-1).tolist()
+        values = values[:slot_count]
+        if len(values) < slot_count:
+            values.extend(SnakeEnv.current_design[len(values):slot_count])
+        return [SnakeEnv._coerce_design_id(value) for value in values]
 
     @staticmethod
     def encode_design_vector(design):
-        design_ids = [int(np.clip(np.round(v), 0, len(SnakeEnv.scale_types) - 1)) for v in design]
-        encoded = np.zeros(len(design_ids) * len(SnakeEnv.scale_types), dtype=np.float32)
+        design_ids = SnakeEnv._coerce_design_vector(design)
+        encoded = np.zeros(len(design_ids) * len(SnakeEnv.design_parameter_options), dtype=np.float32)
         for idx, design_id in enumerate(design_ids):
-            encoded[idx * len(SnakeEnv.scale_types) + design_id] = 1.0
+            encoded_idx = SnakeEnv._design_id_to_index[design_id]
+            encoded[idx * len(SnakeEnv.design_parameter_options) + encoded_idx] = 1.0
         return encoded
 
     @staticmethod
     def get_design_feature_labels():
         labels = []
-        scale_ids = sorted(SnakeEnv.scale_types.keys())
+        design_ids = list(SnakeEnv.design_parameter_options)
         for slot_idx in range(len(SnakeEnv.current_design)):
             if slot_idx < len(SnakeEnv.design_slot_names):
                 slot_name = SnakeEnv.design_slot_names[slot_idx]
             else:
                 slot_name = f'Segment{slot_idx + 1}'
-            for scale_id in scale_ids:
-                labels.append(f'{slot_name}_{SnakeEnv.scale_types[scale_id]}')
+            for design_id in design_ids:
+                labels.append(f'{slot_name}_{SnakeEnv.design_types[design_id]}')
         return labels
 
     @staticmethod
@@ -796,9 +805,8 @@ class SnakeEnv(gymnasium.Env):
       
     @staticmethod 
     def get_random_design():
-        optimized_params = np.random.uniform(
-            low=SnakeEnv.design_parameter_bounds[0][0],
-            high=SnakeEnv.design_parameter_bounds[0][1],
+        optimized_params = np.random.choice(
+            SnakeEnv.design_parameter_options,
             size=len(SnakeEnv.design_parameter_bounds),
         )
         return optimized_params

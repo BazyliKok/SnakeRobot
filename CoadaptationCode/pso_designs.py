@@ -118,7 +118,7 @@ for path in REPLAY_PATHS:
             )
 print("Done loading selected episodes.")
 
-design_dim = 4
+design_dim = len(SnakeEnv.design_parameter_bounds)
 obs_dim = env.observation_space.low.size
 action_dim = env.action_space.low.size
 
@@ -136,6 +136,7 @@ policy_network = TanhGaussianPolicy(
 
 print("env base obs dim:", env.observation_space.low.size)
 print("design dim:", design_dim)
+print("valid design IDs:", SnakeEnv.design_parameter_options)
 print("total obs dim (used):", obs_dim)
 print("action dim:", action_dim)
 print("Q input dim:", obs_dim + action_dim)
@@ -147,7 +148,7 @@ policy_network.load_state_dict(torch.load("pop_policy.pt", map_location=ptu.devi
 
 #run pso
 pso = PSO_batch(pop_replay, env)
-init_design = [45.0, 5.0, 50.0, 0.0]  # initial guess
+init_design = [SnakeEnv.design_parameter_options[0]] * design_dim  # initial guess
 
 print("Running PSO...")
 cost, best_design = pso.optimize_design(
@@ -155,9 +156,6 @@ cost, best_design = pso.optimize_design(
     q_network=q_network,
     policy_network=policy_network
 )
-
-# === Clip material type (last parameter) to 0 or 1 ===
-best_design[-1] = np.round(np.clip(best_design[-1], 0, 1))
 
 print("Best morphology parameters:", best_design)
 print("Final cost:", cost)
