@@ -48,7 +48,7 @@ class ClientApp(object):
         if server_name == 'fake':
             client = natnet.fakes.SingleFrameFakeClient.fake_connect(rate=rate)
         else:
-            server_ip = server_name or os.getenv('OPTITRACK_SERVER_IP', '10.0.10.2')
+            server_ip = server_name or os.getenv('OPTITRACK_SERVER_IP', '10.0.10.4')
             try:
                 client = natnet.Client.connect(server_ip)
             except Exception as exc:
