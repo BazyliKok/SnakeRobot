@@ -160,7 +160,18 @@ class SACTrainer(TorchTrainer):
         policy_output = self.policy(obs, **policy_kwargs)
 
         if isinstance(policy_output, (tuple, list)):
-            return policy_output
+            policy_output = list(policy_output)
+            if len(policy_output) >= 4:
+                log_pi = policy_output[3]
+                if log_pi is not None:
+                    if log_pi.dim() == 1:
+                        log_pi = log_pi.unsqueeze(-1)
+                    elif log_pi.dim() > 1 and log_pi.shape[-1] != 1:
+                        log_pi = log_pi.sum(dim=-1, keepdim=True)
+                else:
+                    log_pi = torch.zeros_like(policy_output[0][..., :1])
+                policy_output[3] = log_pi
+            return tuple(policy_output)
 
         # Some rlkit variants return a distribution object (e.g. TanhNormal)
         # instead of an unpackable tuple. In that case, sample an action and
@@ -237,7 +248,7 @@ class SACTrainer(TorchTrainer):
             self.alpha_optimizer.zero_grad()
             alpha_loss.backward()
             self.alpha_optimizer.step()
-            alpha = self.log_alpha.exp()
+            alpha = self.log_alpha.exp().detach()
         else:
             alpha_loss = 0
             alpha = self._alpha

@@ -790,6 +790,31 @@ class Train():
         terrain_successes = {}
         terrain_success_steps = {}
         terrain_rollout_seeds = {}
+        terrain_reset_failures = {}
+        terrain_motor_faults = {}
+        terrain_total_rollouts = {}
+        terrain_valid_rollouts = {}
+
+        def _finite_values(values):
+            arr = np.asarray(values, dtype=np.float32)
+            if arr.size == 0:
+                return arr
+            return arr[np.isfinite(arr)]
+
+        def _json_safe(obj):
+            if isinstance(obj, dict):
+                return {key: _json_safe(value) for key, value in obj.items()}
+            if isinstance(obj, list):
+                return [_json_safe(value) for value in obj]
+            if isinstance(obj, tuple):
+                return [_json_safe(value) for value in obj]
+            if isinstance(obj, np.ndarray):
+                return [_json_safe(value) for value in obj.tolist()]
+            if isinstance(obj, np.generic):
+                obj = obj.item()
+            if isinstance(obj, float) and not np.isfinite(obj):
+                return None
+            return obj
 
         for terrain_idx, terrain in enumerate(self.terrain_sequence):
             SnakeEnv.set_current_terrain(terrain)
@@ -798,6 +823,9 @@ class Train():
             episode_successes = []
             success_steps = []
             rollout_seeds = []
+            reset_failures = 0
+            motor_faults = 0
+            valid_rollouts = 0
 
             for rollout_idx in range(self.eval_episodes_per_terrain):
                 eval_seed = self._stable_seed(
@@ -817,9 +845,10 @@ class Train():
                         "because reset recovery did not succeed."
                     )
                     SnakeEnv.disableMotorTorque()
-                    episode_returns.append(0.0)
-                    episode_lengths.append(0)
-                    episode_successes.append(0)
+                    episode_returns.append(np.nan)
+                    episode_lengths.append(np.nan)
+                    episode_successes.append(np.nan)
+                    reset_failures += 1
                     continue
                 done = False
                 steps = 0
@@ -852,61 +881,112 @@ class Train():
                 SnakeEnv.disableMotorTorque()
                 if rollout_faulted:
                     print('Evaluation rollout terminated early because a motor fault was detected.')
-                episode_returns.append(float(cumulative_reward))
-                episode_lengths.append(int(steps))
-                episode_successes.append(int(success))
-                if success:
-                    success_steps.append(int(steps))
+                    motor_faults += 1
+                    episode_returns.append(np.nan)
+                    episode_lengths.append(np.nan)
+                    episode_successes.append(np.nan)
+                else:
+                    valid_rollouts += 1
+                    episode_returns.append(float(cumulative_reward))
+                    episode_lengths.append(int(steps))
+                    episode_successes.append(float(success))
+                    if success:
+                        success_steps.append(int(steps))
 
             terrain_returns[terrain] = episode_returns
             terrain_lengths[terrain] = episode_lengths
             terrain_successes[terrain] = episode_successes
             terrain_success_steps[terrain] = success_steps
             terrain_rollout_seeds[terrain] = rollout_seeds
+            terrain_reset_failures[terrain] = reset_failures
+            terrain_motor_faults[terrain] = motor_faults
+            terrain_total_rollouts[terrain] = len(episode_returns)
+            terrain_valid_rollouts[terrain] = valid_rollouts
 
         SnakeEnv.set_current_terrain(previous_terrain)
 
-        terrain_means = {terrain: float(np.mean(vals)) for terrain, vals in terrain_returns.items()}
-        terrain_std = {terrain: float(np.std(vals)) for terrain, vals in terrain_returns.items()}
-        terrain_medians = {terrain: float(np.median(vals)) for terrain, vals in terrain_returns.items()}
-        terrain_mins = {terrain: float(np.min(vals)) for terrain, vals in terrain_returns.items()}
+        terrain_means = {}
+        terrain_std = {}
+        terrain_medians = {}
+        terrain_mins = {}
         terrain_success_rates = {
-            terrain: float(np.mean(vals)) if vals else 0.0
+            terrain: float(np.mean(_finite_values(vals))) if len(_finite_values(vals)) > 0 else np.nan
             for terrain, vals in terrain_successes.items()
         }
         terrain_mean_lengths = {
-            terrain: float(np.mean(vals)) if vals else 0.0
+            terrain: float(np.mean(_finite_values(vals))) if len(_finite_values(vals)) > 0 else np.nan
             for terrain, vals in terrain_lengths.items()
         }
         terrain_mean_success_steps = {
-            terrain: (float(np.mean(vals)) if vals else None)
+            terrain: (float(np.mean(_finite_values(vals))) if len(_finite_values(vals)) > 0 else np.nan)
             for terrain, vals in terrain_success_steps.items()
         }
 
-        mean_return_per_terrain = np.array(list(terrain_means.values()), dtype=np.float32)
-        all_eval_returns = np.array(
-            [ret for returns in terrain_returns.values() for ret in returns],
-            dtype=np.float32,
-        )
-        all_eval_lengths = np.array(
-            [length for lengths in terrain_lengths.values() for length in lengths],
-            dtype=np.float32,
-        )
-        all_success_steps = np.array(
-            [step for steps in terrain_success_steps.values() for step in steps],
-            dtype=np.float32,
-        )
-        mean_return = float(np.mean(mean_return_per_terrain))
-        worst_terrain_return = float(np.min(mean_return_per_terrain))
-        std_across_terrains = float(np.std(mean_return_per_terrain))
+        for terrain in self.terrain_sequence:
+            terrain_eval_returns = _finite_values(terrain_returns[terrain])
+            terrain_eval_lengths = _finite_values(terrain_lengths[terrain])
+            terrain_eval_successes = _finite_values(terrain_successes[terrain])
+            terrain_eval_success_steps = _finite_values(terrain_success_steps[terrain])
+
+            if len(terrain_eval_returns) > 0:
+                terrain_means[terrain] = float(np.mean(terrain_eval_returns))
+                terrain_std[terrain] = float(np.std(terrain_eval_returns))
+                terrain_medians[terrain] = float(np.median(terrain_eval_returns))
+                terrain_mins[terrain] = float(np.min(terrain_eval_returns))
+            else:
+                terrain_means[terrain] = np.nan
+                terrain_std[terrain] = np.nan
+                terrain_medians[terrain] = np.nan
+                terrain_mins[terrain] = np.nan
+
+            terrain_success_rates[terrain] = (
+                float(np.mean(terrain_eval_successes)) if len(terrain_eval_successes) > 0 else np.nan
+            )
+            terrain_mean_lengths[terrain] = (
+                float(np.mean(terrain_eval_lengths)) if len(terrain_eval_lengths) > 0 else np.nan
+            )
+            terrain_mean_success_steps[terrain] = (
+                float(np.mean(terrain_eval_success_steps)) if len(terrain_eval_success_steps) > 0 else np.nan
+            )
+
+        mean_return_per_terrain = _finite_values(list(terrain_means.values()))
+        all_eval_returns = _finite_values([ret for returns in terrain_returns.values() for ret in returns])
+        all_eval_lengths = _finite_values([length for lengths in terrain_lengths.values() for length in lengths])
+        all_success_steps = _finite_values([step for steps in terrain_success_steps.values() for step in steps])
+        valid_terrain_success_rates = _finite_values(list(terrain_success_rates.values()))
+        if len(mean_return_per_terrain) > 0:
+            mean_return = float(np.mean(mean_return_per_terrain))
+            worst_terrain_return = float(np.min(mean_return_per_terrain))
+            std_across_terrains = float(np.std(mean_return_per_terrain))
+        else:
+            mean_return = np.nan
+            worst_terrain_return = np.nan
+            std_across_terrains = np.nan
         robustness_score = float(mean_return - self.eval_robustness_lambda * std_across_terrains)
-        mean_success_rate = float(np.mean(list(terrain_success_rates.values())))
-        worst_success_rate = float(np.min(list(terrain_success_rates.values())))
-        overall_median_eval_return = float(np.median(all_eval_returns))
-        overall_min_eval_return = float(np.min(all_eval_returns))
-        overall_mean_episode_length = float(np.mean(all_eval_lengths))
+        mean_success_rate = float(np.mean(valid_terrain_success_rates)) if len(valid_terrain_success_rates) > 0 else np.nan
+        worst_success_rate = float(np.min(valid_terrain_success_rates)) if len(valid_terrain_success_rates) > 0 else np.nan
+        overall_median_eval_return = float(np.median(all_eval_returns)) if len(all_eval_returns) > 0 else np.nan
+        overall_min_eval_return = float(np.min(all_eval_returns)) if len(all_eval_returns) > 0 else np.nan
+        overall_mean_episode_length = float(np.mean(all_eval_lengths)) if len(all_eval_lengths) > 0 else np.nan
         overall_mean_success_steps = (
-            float(np.mean(all_success_steps)) if len(all_success_steps) > 0 else None
+            float(np.mean(all_success_steps)) if len(all_success_steps) > 0 else np.nan
+        )
+        total_eval_rollouts = sum(terrain_total_rollouts.values())
+        total_valid_eval_rollouts = sum(terrain_valid_rollouts.values())
+        total_reset_failures = sum(terrain_reset_failures.values())
+        total_motor_faults = sum(terrain_motor_faults.values())
+        total_failed_eval_rollouts = total_reset_failures + total_motor_faults
+        overall_valid_rollout_rate = (
+            float(total_valid_eval_rollouts / total_eval_rollouts) if total_eval_rollouts > 0 else np.nan
+        )
+        overall_reset_failure_rate = (
+            float(total_reset_failures / total_eval_rollouts) if total_eval_rollouts > 0 else np.nan
+        )
+        overall_motor_fault_rate = (
+            float(total_motor_faults / total_eval_rollouts) if total_eval_rollouts > 0 else np.nan
+        )
+        overall_failure_rate = (
+            float(total_failed_eval_rollouts / total_eval_rollouts) if total_eval_rollouts > 0 else np.nan
         )
 
         summary_row = {
@@ -922,6 +1002,15 @@ class Train():
             'Training_Terrain_Block_Size': int(self.training_terrain_block_size),
             'Training_Terrain_Block_Order': '|'.join(self.training_terrain_block_order),
             'Eval_Episodes_Per_Terrain': int(self.eval_episodes_per_terrain),
+            'Overall_Total_Eval_Rollouts': int(total_eval_rollouts),
+            'Overall_Valid_Eval_Rollouts': int(total_valid_eval_rollouts),
+            'Overall_Reset_Failures': int(total_reset_failures),
+            'Overall_Motor_Faults': int(total_motor_faults),
+            'Overall_Failed_Eval_Rollouts': int(total_failed_eval_rollouts),
+            'Overall_Valid_Rollout_Rate': overall_valid_rollout_rate,
+            'Overall_Reset_Failure_Rate': overall_reset_failure_rate,
+            'Overall_Motor_Fault_Rate': overall_motor_fault_rate,
+            'Overall_Failure_Rate': overall_failure_rate,
             'Mean_Return': mean_return,
             'Std_Across_Terrains': std_across_terrains,
             'Worst_Terrain_Return': worst_terrain_return,
@@ -938,6 +1027,23 @@ class Train():
         }
 
         for terrain in self.terrain_sequence:
+            total_rollouts = terrain_total_rollouts[terrain]
+            valid_rollouts = terrain_valid_rollouts[terrain]
+            reset_failures = terrain_reset_failures[terrain]
+            motor_faults = terrain_motor_faults[terrain]
+            summary_row[f'{terrain}_Total_Rollouts'] = int(total_rollouts)
+            summary_row[f'{terrain}_Valid_Rollouts'] = int(valid_rollouts)
+            summary_row[f'{terrain}_Reset_Failures'] = int(reset_failures)
+            summary_row[f'{terrain}_Motor_Faults'] = int(motor_faults)
+            summary_row[f'{terrain}_Valid_Rollout_Rate'] = (
+                float(valid_rollouts / total_rollouts) if total_rollouts > 0 else np.nan
+            )
+            summary_row[f'{terrain}_Reset_Failure_Rate'] = (
+                float(reset_failures / total_rollouts) if total_rollouts > 0 else np.nan
+            )
+            summary_row[f'{terrain}_Motor_Fault_Rate'] = (
+                float(motor_faults / total_rollouts) if total_rollouts > 0 else np.nan
+            )
             summary_row[f'{terrain}_Mean_Return'] = terrain_means[terrain]
             summary_row[f'{terrain}_Std_Return'] = terrain_std[terrain]
             summary_row[f'{terrain}_Median_Return'] = terrain_medians[terrain]
@@ -957,7 +1063,7 @@ class Train():
             summary_df.to_csv(summary_csv_path, index=False)
 
         detail_payload = {
-            'summary': summary_row,
+            'summary': _json_safe(summary_row),
             'terrain_episode_returns': terrain_returns,
             'terrain_episode_lengths': terrain_lengths,
             'terrain_episode_successes': terrain_successes,
@@ -969,7 +1075,7 @@ class Train():
             f'{self.date}_DesignCycle{self.design_counter}_ep{self.episode_counter}_eval_summary.json'
         )
         with open(detail_json_path, 'w') as f:
-            json.dump(detail_payload, f, indent=2, allow_nan=False)
+            json.dump(_json_safe(detail_payload), f, indent=2, allow_nan=False)
 
         print('Evaluation summary:', summary_row)
        
