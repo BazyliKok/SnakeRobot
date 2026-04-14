@@ -1360,12 +1360,12 @@ if __name__ == '__main__':
     trainingObj.passLocks(optiLock, motorLock)
 
     # if resuming from a checkpoint:
-    base_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results_bazyli')
+    base_path = "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_bazyli"
     #change name
-    checkpoint_prefix = "2025_06_03_DesignCycle0_ep30"
+    checkpoint_prefix = "2026_04_14_DesignCycle0_ep8"
 
     #set to false if new training starts
-    resuming_from_checkpoint = False 
+    resuming_from_checkpoint = True
 
     if resuming_from_checkpoint:
         trainingObj.load_networks(base_path, checkpoint_prefix)

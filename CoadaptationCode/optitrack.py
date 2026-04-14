@@ -39,11 +39,11 @@ class ClientApp(object):
 
     # optiData = attr.ib([])
     velocData = []
-    target_rigid_body_id = 16
+    target_rigid_body_id = 17
     _last_target_missing_printed = 0
     
     @classmethod
-    def connect(cls, server_name, rate, quiet, target_rigid_body_id=None):
+    def connect(cls, server_name, rate, quiet, target_rigid_body_id=21):
         # print('IN CONNECT')
         if server_name == 'fake':
             client = natnet.fakes.SingleFrameFakeClient.fake_connect(rate=rate)
@@ -145,7 +145,7 @@ class Optitrack:
         parser.add_argument('--quiet', action='store_true')
         self.args, _unknown = parser.parse_known_args()
 
-        self.target_rigid_body_id = 16
+        self.target_rigid_body_id = 17
 
         folder = 'mocap-data'
         file_path = './' + folder + '/' + file_extension

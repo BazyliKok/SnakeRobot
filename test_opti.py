@@ -69,7 +69,7 @@ def main():
     try:
         for _ in range(args.frames):
             client.run_once()
-            time.sleep(args.sleep)
+            time.sleep(0.005)
     except KeyboardInterrupt:
         print("\nStopped by user.")
         return 0
