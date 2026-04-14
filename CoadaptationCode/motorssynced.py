@@ -57,10 +57,27 @@ class MotorsSynced:
         self.DRIVE_MODE                     = int(os.getenv("SNAKE_DXL_DRIVE_MODE", "4"))
         self.PROFILE_ACCELERATION           = int(os.getenv("SNAKE_DXL_PROFILE_ACCELERATION", "25"))
         self.PROFILE_VELOCITY               = int(os.getenv("SNAKE_DXL_PROFILE_VELOCITY", "100"))
+        reset_profile_acceleration = os.getenv("SNAKE_DXL_RESET_PROFILE_ACCELERATION")
+        reset_profile_velocity = os.getenv("SNAKE_DXL_RESET_PROFILE_VELOCITY")
+        self.RESET_PROFILE_ACCELERATION     = (
+            int(reset_profile_acceleration)
+            if reset_profile_acceleration is not None
+            else None
+        )
+        self.RESET_PROFILE_VELOCITY         = (
+            int(reset_profile_velocity)
+            if reset_profile_velocity is not None
+            else None
+        )
         self.REBOOT_WAIT_SECONDS            = float(os.getenv("SNAKE_DXL_REBOOT_WAIT_S", "1.5"))
         self.RESET_TIMEOUT_SECONDS          = float(os.getenv("SNAKE_DXL_RESET_TIMEOUT_S", "10.0"))
         self.RESET_POLL_INTERVAL_SECONDS    = float(os.getenv("SNAKE_DXL_RESET_POLL_INTERVAL_S", "0.05"))
         self.RESET_POSITION_THRESHOLD       = int(os.getenv("SNAKE_DXL_RESET_THRESHOLD", "50"))
+        self.RESET_MAX_STEP_COUNTS          = int(os.getenv("SNAKE_DXL_RESET_MAX_STEP_COUNTS", "80"))
+        self.RESET_STAGE_TIMEOUT_SECONDS    = float(os.getenv("SNAKE_DXL_RESET_STAGE_TIMEOUT_S", "4.0"))
+        self.RESET_STAGE_SETTLE_SECONDS     = float(os.getenv("SNAKE_DXL_RESET_STAGE_SETTLE_S", "0.2"))
+        self.REBOOT_STATUS_RETRIES          = int(os.getenv("SNAKE_DXL_REBOOT_STATUS_RETRIES", "8"))
+        self.REBOOT_STATUS_INTERVAL_SECONDS = float(os.getenv("SNAKE_DXL_REBOOT_STATUS_INTERVAL_S", "0.25"))
         self.last_good_motor_pos            = [0.0] * len(self.DXL_ID)
         self._recovery_in_progress          = False
         self._drive_mode_supported          = True
@@ -202,8 +219,24 @@ class MotorsSynced:
             self.LEN_PRES_LOAD,
         )
 
-    def _configure_motion_profile(self, motor_ids=None, include_drive_mode=True):
+    def _configure_motion_profile(
+        self,
+        motor_ids=None,
+        include_drive_mode=True,
+        profile_acceleration=None,
+        profile_velocity=None,
+    ):
         motor_ids = self.DXL_ID if motor_ids is None else motor_ids
+        profile_acceleration = (
+            self.PROFILE_ACCELERATION
+            if profile_acceleration is None
+            else int(profile_acceleration)
+        )
+        profile_velocity = (
+            self.PROFILE_VELOCITY
+            if profile_velocity is None
+            else int(profile_velocity)
+        )
         success = True
         for motorID in motor_ids:
             if include_drive_mode and self._drive_mode_supported:
@@ -226,7 +259,7 @@ class MotorsSynced:
                 self.portHandler,
                 motorID,
                 self.ADDR_PROFILE_ACCELERATION,
-                self.PROFILE_ACCELERATION,
+                profile_acceleration,
             )
             success = (
                 self._log_motor_result(motorID, "set profile acceleration", dxlCommRes, dxlError)
@@ -237,7 +270,7 @@ class MotorsSynced:
                 self.portHandler,
                 motorID,
                 self.ADDR_PROFILE_VELOCITY,
-                self.PROFILE_VELOCITY,
+                profile_velocity,
             )
             success = (
                 self._log_motor_result(motorID, "set profile velocity", dxlCommRes, dxlError)
@@ -245,6 +278,62 @@ class MotorsSynced:
             )
 
         return success
+
+    def _build_reset_waypoints(self, start_positions, target_positions):
+        if start_positions is None or len(start_positions) != len(target_positions):
+            return [target_positions]
+
+        max_step = max(1, int(self.RESET_MAX_STEP_COUNTS))
+        deltas = [
+            target_pos - start_pos
+            for start_pos, target_pos in zip(start_positions, target_positions)
+        ]
+        max_delta = max(abs(delta) for delta in deltas)
+        stages = max(1, int(np.ceil(max_delta / max_step)))
+        waypoints = []
+
+        for stage in range(1, stages + 1):
+            fraction = stage / stages
+            waypoint = [
+                int(round(start_pos + (delta * fraction)))
+                for start_pos, delta in zip(start_positions, deltas)
+            ]
+            if not waypoints or waypoint != waypoints[-1]:
+                waypoints.append(waypoint)
+
+        return waypoints
+
+    def _uses_time_based_profile(self):
+        return self._drive_mode_supported and bool(self.DRIVE_MODE & 0x04)
+
+    def _reset_motion_profile_values(self):
+        if self._uses_time_based_profile():
+            default_acceleration = 300
+            default_velocity = 1200
+        else:
+            default_acceleration = 10
+            default_velocity = 40
+
+        reset_acceleration = (
+            default_acceleration
+            if self.RESET_PROFILE_ACCELERATION is None
+            else self.RESET_PROFILE_ACCELERATION
+        )
+        reset_velocity = (
+            default_velocity
+            if self.RESET_PROFILE_VELOCITY is None
+            else self.RESET_PROFILE_VELOCITY
+        )
+        return reset_acceleration, reset_velocity
+
+    def _restore_normal_motion_profile(self):
+        reset_acceleration, reset_velocity = self._reset_motion_profile_values()
+        if (
+            reset_acceleration == self.PROFILE_ACCELERATION
+            and reset_velocity == self.PROFILE_VELOCITY
+        ):
+            return True
+        return self.setMotorSpeed()
 
     def _reopen_port(self):
         try:
@@ -332,11 +421,11 @@ class MotorsSynced:
                 self.enableTorque()
                 return True
 
-            recovered_any = False
+            recovered_all = True
             for motorID in motors_to_reboot:
-                recovered_any = self.rebootMotor(motorID) or recovered_any
+                recovered_all = self.rebootMotor(motorID) and recovered_all
 
-            return recovered_any
+            return recovered_all
         finally:
             self._recovery_in_progress = False
 
@@ -351,6 +440,23 @@ class MotorsSynced:
     def setMotorSpeed(self):
         # Re-apply the configured trapezoidal/time-based profile values.
         return self._configure_motion_profile()
+
+    def _wait_for_clear_hardware_status(self, motorID):
+        for _ in range(max(1, self.REBOOT_STATUS_RETRIES)):
+            hardware_error = self.readHardwareErrorStatus(motorID)
+            if hardware_error == 0:
+                return True
+            if hardware_error is not None:
+                print(
+                    f"Motor {motorID} still reports hardware error "
+                    f"0x{hardware_error:02X} ({self._format_hardware_error_status(hardware_error)}) "
+                    "after reboot."
+                )
+                return False
+            time.sleep(self.REBOOT_STATUS_INTERVAL_SECONDS)
+
+        print(f"Motor {motorID} did not respond with a clear hardware status after reboot.")
+        return False
 
     def enableTorque(self):
         # enable motor torques to be able to move motors     
@@ -462,7 +568,15 @@ class MotorsSynced:
             print(f"Reset positions out of range: {target_positions}")
             return False
 
-        motion_profile_ok = self.setMotorSpeed()
+        reset_acceleration, reset_velocity = self._reset_motion_profile_values()
+        print(
+            f"Using reset motion profile: acceleration={reset_acceleration}, "
+            f"velocity/time={reset_velocity}"
+        )
+        motion_profile_ok = self._configure_motion_profile(
+            profile_acceleration=reset_acceleration,
+            profile_velocity=reset_velocity,
+        )
         torque_enabled = self.enableTorque()
         if not (motion_profile_ok and torque_enabled):
             status_map = self.reportHardwareErrorStatuses(context="during reset setup")
@@ -479,22 +593,52 @@ class MotorsSynced:
                 )
                 if self._attempt_bus_recovery("reset setup hardware fault", latched_error_motors):
                     print("Retrying reset after targeted motor recovery.")
-                    motion_profile_ok = self.setMotorSpeed()
+                    motion_profile_ok = self._configure_motion_profile(
+                        profile_acceleration=reset_acceleration,
+                        profile_velocity=reset_velocity,
+                    )
                     torque_enabled = self.enableTorque()
 
             if not (motion_profile_ok and torque_enabled):
                 return False
 
-        if not self.writePos(target_positions):
-            self.reportHardwareErrorStatuses(context="after failed reset command")
-            return False
+        start_positions = self._read_positions_raw()
+        waypoints = self._build_reset_waypoints(start_positions, target_positions)
+        if start_positions is None:
+            print("No current motor positions before reset; using one direct reset command.")
+        else:
+            print(
+                f"Resetting motors from {start_positions} to {target_positions} "
+                f"in {len(waypoints)} staged move(s)."
+            )
 
-        reached_target = self.waitForTargetPositions(target_positions)
+        reached_target = True
+        for waypoint_idx, waypoint in enumerate(waypoints):
+            print(f"Reset stage {waypoint_idx + 1}/{len(waypoints)} target: {waypoint}")
+            if not self.writePos(waypoint):
+                self.reportHardwareErrorStatuses(context="after failed reset command")
+                reached_target = False
+                break
+
+            stage_timeout_s = (
+                self.RESET_TIMEOUT_SECONDS
+                if waypoint_idx == len(waypoints) - 1
+                else self.RESET_STAGE_TIMEOUT_SECONDS
+            )
+            if not self.waitForTargetPositions(waypoint, timeout_s=stage_timeout_s):
+                reached_target = False
+                break
+
+            if waypoint_idx < len(waypoints) - 1:
+                time.sleep(self.RESET_STAGE_SETTLE_SECONDS)
+
         if disable_after_reset:
             torque_disabled = self.disableTorque()
-            return reached_target and torque_disabled
+            normal_profile_ok = self._restore_normal_motion_profile()
+            return reached_target and torque_disabled and normal_profile_ok
 
-        return reached_target
+        normal_profile_ok = self._restore_normal_motion_profile()
+        return reached_target and normal_profile_ok
           
     def writePos(self,setPositionsTo):
         # write positions to motors
@@ -666,11 +810,19 @@ class MotorsSynced:
         # method to reboot motors
         reboot_result = self.packetHandler.reboot(self.portHandler, motor)
         dxlCommRes, dxlError = self._coerce_write_result(reboot_result)
-        if not self._log_motor_result(motor, "reboot", dxlCommRes, dxlError):
-            return False
+        reboot_packet_ok = self._log_motor_result(motor, "reboot", dxlCommRes, dxlError)
+        if not reboot_packet_ok:
+            print(
+                f"Motor {motor} reboot packet reported an error; "
+                "waiting briefly to verify whether the reboot still completed."
+            )
 
         time.sleep(self.REBOOT_WAIT_SECONDS)
-        self._configure_motion_profile([motor])
+        if not self._wait_for_clear_hardware_status(motor):
+            return False
+
+        if not self._configure_motion_profile([motor]):
+            return False
 
         dxlCommRes, dxlError = self.packetHandler.write1ByteTxRx(
             self.portHandler,

@@ -322,6 +322,7 @@ class Train():
                 )
                 if not recovered:
                     print("Motor recovery did not report success during reset retry.")
+                    break
                 time.sleep(1.0)
 
         print(
@@ -344,12 +345,24 @@ class Train():
 
             try:
                 if self.design_counter < self.num_init_designs:
-                    self.initial_design_loop()
+                    design_cycle_completed = self.initial_design_loop()
+                    if not design_cycle_completed:
+                        print(
+                            f"Stopping run at design cycle {self.design_counter}, "
+                            f"episode {self.episode_counter}; resume will retry this episode."
+                        )
+                        break
                     print(f'design counter at {self.design_counter}')
                     if self.design_counter == self.num_init_designs and self.optimized_params is None:
                         self.first_train_op()
                 else:
-                    self.train_loop()
+                    design_cycle_completed = self.train_loop()
+                    if not design_cycle_completed:
+                        print(
+                            f"Stopping run at design cycle {self.design_counter}, "
+                            f"episode {self.episode_counter}; resume will retry this episode."
+                        )
+                        break
             except Exception as exc:
                 self._recover_motor_fault(
                     f"design cycle {self.design_counter}",
@@ -484,10 +497,20 @@ class Train():
                 try:
                     next_state, reward, terminated, truncated, info = self.env.step(action) # step the action, note: reward is scaled in environment
                 except MotorFaultError as exc:
-                    self._recover_motor_fault(
+                    recovered = self._recover_motor_fault(
                         f"training episode {self.episode_counter} step {step_number}",
                         exc,
                     )
+                    if not recovered:
+                        print(
+                            "Motor recovery failed during the episode; stopping without "
+                            "advancing the checkpoint so this episode can be retried."
+                        )
+                        try:
+                            self.replay.terminate_episode()
+                        except Exception as replay_exc:
+                            print(f"Failed to terminate replay episode after motor fault: {replay_exc}")
+                        return False
                     print("Ending current training episode early after motor recovery.")
                     motor_fault_ended_episode = True
                     break
@@ -625,7 +648,9 @@ class Train():
         for episode in range(start_ep, iterations):
             print('IN TRAINING LOOP')
             self.currEp = episode
-            self.train_single_iteration()
+            if not self.train_single_iteration():
+                print("Stopping training loop because no experience was collected.")
+                return False
         
             #self.plot_rewards()
 
@@ -656,7 +681,8 @@ class Train():
         self.design_counter += 1 # another design
         self.episode_counter = 0
 
-        
+        return True
+            
             
     def train_single_iteration(self):
         experience_collected = False
@@ -675,6 +701,13 @@ class Train():
                 print(f"Failed to terminate replay episode after exception: {replay_exc}")
             print("Skipping the rest of this training episode after an unexpected exception.")
             experience_collected = False
+
+        if not experience_collected:
+            print(
+                f"No experience collected for episode {self.episode_counter}; "
+                "leaving episode counter unchanged and not saving a new checkpoint."
+            )
+            return False
         
         if self.design_counter >= 2: # only train population after certain number of designs, in this case 2
             train_pop = True
@@ -705,6 +738,7 @@ class Train():
         print(f'episode counter at: {self.episode_counter}')
 
         self.save_networks()
+        return True
       
 
     def initial_design_loop(self):
@@ -730,7 +764,9 @@ class Train():
         for _ in range(self.episode_counter, self.episode_iterations):
             self.currEp = _
             print('in initial design loop')
-            self.train_single_iteration()
+            if not self.train_single_iteration():
+                print("Stopping initial design loop because no experience was collected.")
+                return False
 
             print(f'range {range(self.episode_counter, self.episode_iterations)}')
         
@@ -739,7 +775,7 @@ class Train():
         self.episode_counter = 0
 
         
-        return
+        return True
           
     def evaluate_policy(self):
         """Evaluate deterministic policy performance across all terrains.
@@ -1385,11 +1421,20 @@ if __name__ == '__main__':
     designs_per_run = 1
 
     # run threads as before
-    motorThread = threading.Thread(target=trainingObj.motorPos, args=(stopEvent,)) 
-    optiThread = threading.Thread(target=trainingObj.optiPos, args=(stopEvent,))
+    motorThread = threading.Thread(target=trainingObj.motorPos, args=(stopEvent,), daemon=True) 
+    optiThread = threading.Thread(target=trainingObj.optiPos, args=(stopEvent,), daemon=True)
     trainingloopThread = threading.Thread(target=trainingObj.run, args=(stopEvent, designs_per_run))
-    
-    motorThread.start()
-    optiThread.start() 
-    trainingloopThread.start()
-    trainingloopThread.join()
+
+    try:
+        motorThread.start()
+        optiThread.start()
+        trainingloopThread.start()
+        trainingloopThread.join()
+    finally:
+        stopEvent.set()
+        try:
+            SnakeEnv.disableMotorTorque()
+        except Exception as exc:
+            print(f"Could not disable motor torque during shutdown: {exc}")
+        motorThread.join(timeout=2.0)
+        optiThread.join(timeout=2.0)
