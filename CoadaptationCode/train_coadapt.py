@@ -281,6 +281,14 @@ class Train():
 
         return tagged_candidates[0]
 
+    def _load_trusted_checkpoint(self, path, **kwargs):
+        try:
+            return torch.load(path, weights_only=False, **kwargs)
+        except TypeError as exc:
+            if 'weights_only' not in str(exc):
+                raise
+            return torch.load(path, **kwargs)
+
     def _recover_motor_fault(self, phase, exc):
         print(f"Motor fault during {phase}: {exc}")
 
@@ -983,35 +991,35 @@ class Train():
         print(f"saved networks for design cycle {self.design_counter} and episode {self.episode_counter}")
 
     def load_networks(self, base_path, checkpoint_prefix):
-        self.rl_alg._ind_policy.load_state_dict(torch.load(
+        self.rl_alg._ind_policy.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'ind_policy_{checkpoint_prefix}', 'pt')
         ).state_dict())
-        self.rl_alg._ind_qf1.load_state_dict(torch.load(
+        self.rl_alg._ind_qf1.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'ind_qf1_{checkpoint_prefix}', 'pt')
         ).state_dict())
-        self.rl_alg._ind_qf2.load_state_dict(torch.load(
+        self.rl_alg._ind_qf2.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'ind_qf2_{checkpoint_prefix}', 'pt')
         ).state_dict())
-        self.rl_alg._ind_qf1_target.load_state_dict(torch.load(
+        self.rl_alg._ind_qf1_target.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'ind_qf1_tar_{checkpoint_prefix}', 'pt')
         ).state_dict())
-        self.rl_alg._ind_qf2_target.load_state_dict(torch.load(
+        self.rl_alg._ind_qf2_target.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'ind_qf2_tar_{checkpoint_prefix}', 'pt')
         ).state_dict())
 
-        self.rl_alg._pop_policy.load_state_dict(torch.load(
+        self.rl_alg._pop_policy.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'pop_policy_{checkpoint_prefix}', 'pt')
         ).state_dict())
-        self.rl_alg._pop_qf1.load_state_dict(torch.load(
+        self.rl_alg._pop_qf1.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'pop_qf1_{checkpoint_prefix}', 'pt')
         ).state_dict())
-        self.rl_alg._pop_qf2.load_state_dict(torch.load(
+        self.rl_alg._pop_qf2.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'pop_qf2_{checkpoint_prefix}', 'pt')
         ).state_dict())
-        self.rl_alg._pop_qf1_target.load_state_dict(torch.load(
+        self.rl_alg._pop_qf1_target.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'pop_qf1_tar_{checkpoint_prefix}', 'pt')
         ).state_dict())
-        self.rl_alg._pop_qf2_target.load_state_dict(torch.load(
+        self.rl_alg._pop_qf2_target.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'pop_qf2_tar_{checkpoint_prefix}', 'pt')
         ).state_dict())
 
@@ -1198,7 +1206,7 @@ class Train():
     def load_replay(self, filepath):
         """Load full coadaptation replay state from disk."""
         try:
-            data = torch.load(filepath)
+            data = self._load_trusted_checkpoint(filepath)
 
             if "individual_buffer" not in data:
                 # Backward-compatible fallback for older checkpoints that only
