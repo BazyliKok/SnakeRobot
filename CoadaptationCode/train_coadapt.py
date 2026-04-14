@@ -1360,7 +1360,7 @@ if __name__ == '__main__':
     trainingObj.passLocks(optiLock, motorLock)
 
     # if resuming from a checkpoint:
-    base_path = "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_bazyli"
+    base_path = trainingObj._checkpoint_results_dir()
     #change name
     checkpoint_prefix = "2026_04_14_DesignCycle0_ep8"
 
