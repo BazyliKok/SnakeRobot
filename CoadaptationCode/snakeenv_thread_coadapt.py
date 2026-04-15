@@ -223,9 +223,30 @@ class SnakeEnv(gymnasium.Env):
 
         if not torque_disabled:
             print(
-                "Warning: disabling motor torque before manual reset reported an issue. "
-                "Check the robot before continuing."
+                "Disabling motor torque before manual reset reported an issue. "
+                "Forcing DYNAMIXEL reboot."
             )
+            recovered = SnakeEnv.recoverMotorFault(
+                context="manual reset torque disable failed",
+                force_reboot=True,
+            )
+            if not recovered:
+                raise MotorFaultError(
+                    "Failed to disable motor torque before manual reset. "
+                    "Automatic DYNAMIXEL recovery/reboot was attempted."
+                )
+
+            SnakeEnv.motorLock.acquire()
+            try:
+                torque_disabled = SnakeEnv.motors.disableTorque()
+            finally:
+                SnakeEnv.motorLock.release()
+
+            if not torque_disabled:
+                raise MotorFaultError(
+                    "Failed to disable motor torque after manual-reset recovery. "
+                    "Automatic DYNAMIXEL recovery/reboot was attempted."
+                )
         return torque_disabled
 
     def _refresh_manual_reset_motor_position(self):
@@ -545,7 +566,16 @@ class SnakeEnv(gymnasium.Env):
         raw_observation = self._get_raw_obs(initial=True)
         starting_z_abs = raw_observation[2]
         starting_x_abs = raw_observation[0]
-        SnakeEnv.enableMotorTorque()
+        if not SnakeEnv.enableMotorTorque():
+            recovered = SnakeEnv.recoverMotorFault(
+                context="reset torque enable failed",
+                force_reboot=True,
+            )
+            if not recovered:
+                raise MotorFaultError(
+                    "Failed to enable motor torque after reset. "
+                    "Automatic DYNAMIXEL recovery/reboot was attempted."
+                )
         # DO NOT UNCOMMENT IN
 
         self.starting_position = raw_observation[0]
@@ -759,22 +789,18 @@ class SnakeEnv(gymnasium.Env):
         SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
         try:
-            SnakeEnv.motors.disableTorque()
+            return SnakeEnv.motors.disableTorque()
         finally:
             SnakeEnv.motorLock.release()
-        #time.sleep(.005)
-        return   
 
     @staticmethod
     def enableMotorTorque():
         SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
         try:
-            SnakeEnv.motors.enableTorque()
+            return SnakeEnv.motors.enableTorque()
         finally:
             SnakeEnv.motorLock.release()
-        #time.sleep(.005)
-        return   
 
     @staticmethod
     def recoverMotorFault(context, motor_ids=None, force_reboot=True):

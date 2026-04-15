@@ -301,12 +301,46 @@ class Train():
         except Exception as recovery_exc:
             print(f"Motor recovery handler raised an exception: {recovery_exc}")
 
-        try:
-            SnakeEnv.disableMotorTorque()
-        except Exception as disable_exc:
-            print(f"Failed to disable motor torque after recovery attempt: {disable_exc}")
+        torque_disabled = self._disable_motor_torque_with_recovery(
+            f"{phase} recovery cleanup"
+        )
+        return recovered and torque_disabled
 
-        return recovered
+    def _disable_motor_torque_with_recovery(self, phase):
+        try:
+            torque_disabled = SnakeEnv.disableMotorTorque()
+            if torque_disabled:
+                return True
+            print(
+                f"Failed to disable motor torque during {phase}; "
+                "forcing DYNAMIXEL reboot."
+            )
+        except Exception as disable_exc:
+            print(
+                f"Failed to disable motor torque during {phase}: {disable_exc}. "
+                "Forcing DYNAMIXEL reboot."
+            )
+
+        try:
+            recovered = SnakeEnv.recoverMotorFault(
+                context=f"{phase}: disable torque failed",
+                force_reboot=True,
+            )
+        except Exception as recovery_exc:
+            print(f"Motor recovery after torque-disable failure raised an exception: {recovery_exc}")
+            return False
+
+        if not recovered:
+            return False
+
+        try:
+            torque_disabled = SnakeEnv.disableMotorTorque()
+            if not torque_disabled:
+                print(f"Motor torque still could not be disabled after reboot during {phase}.")
+            return torque_disabled
+        except Exception as disable_exc:
+            print(f"Motor torque disable after reboot raised an exception during {phase}: {disable_exc}")
+            return False
 
     def _reset_env_with_motor_recovery(self, seed, phase, max_attempts=2):
         last_exc = None
@@ -551,8 +585,10 @@ class Train():
 
                 state = next_state # set state for next iteration
 
-            SnakeEnv.disableMotorTorque() # stop motors at the end of each episode
-            print('disabled torque')
+            if self._disable_motor_torque_with_recovery("end of training episode"):
+                print('disabled torque')
+            else:
+                print('Motor torque disable/recovery failed at end of training episode.')
             if motor_fault_ended_episode:
                 print('Episode terminated early because a motor fault was detected and recovery was triggered.')
 
@@ -845,7 +881,7 @@ class Train():
                         f"Skipping evaluation rollout {rollout_idx} on terrain '{terrain}' "
                         "because reset recovery did not succeed."
                     )
-                    SnakeEnv.disableMotorTorque()
+                    self._disable_motor_torque_with_recovery("evaluation reset failure")
                     episode_returns.append(np.nan)
                     episode_lengths.append(np.nan)
                     episode_successes.append(np.nan)
@@ -879,7 +915,7 @@ class Train():
                     done = terminated or truncated or (steps >= self._episode_length)
                     state = next_state
 
-                SnakeEnv.disableMotorTorque()
+                self._disable_motor_torque_with_recovery("end of evaluation rollout")
                 if rollout_faulted:
                     print('Evaluation rollout terminated early because a motor fault was detected.')
                     motor_faults += 1
@@ -1542,8 +1578,25 @@ if __name__ == '__main__':
     finally:
         stopEvent.set()
         try:
-            SnakeEnv.disableMotorTorque()
+            torque_disabled = SnakeEnv.disableMotorTorque()
+            if not torque_disabled:
+                print("Could not disable motor torque during shutdown; forcing DYNAMIXEL reboot.")
+                recovered = SnakeEnv.recoverMotorFault(
+                    context="shutdown torque disable failed",
+                    force_reboot=True,
+                )
+                if recovered and not SnakeEnv.disableMotorTorque():
+                    print("Motor torque still could not be disabled after shutdown reboot.")
         except Exception as exc:
-            print(f"Could not disable motor torque during shutdown: {exc}")
+            print(f"Could not disable motor torque during shutdown: {exc}. Forcing DYNAMIXEL reboot.")
+            try:
+                recovered = SnakeEnv.recoverMotorFault(
+                    context=f"shutdown torque disable raised: {exc}",
+                    force_reboot=True,
+                )
+                if recovered and not SnakeEnv.disableMotorTorque():
+                    print("Motor torque still could not be disabled after shutdown reboot.")
+            except Exception as recovery_exc:
+                print(f"Shutdown motor recovery raised an exception: {recovery_exc}")
         motorThread.join(timeout=2.0)
         optiThread.join(timeout=2.0)

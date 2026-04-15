@@ -115,10 +115,12 @@ class MotorsSynced:
             quit()
         
         # Configure the motion profile before torque is enabled.
-        self._configure_motion_profile()
+        motion_profile_ok = self._configure_motion_profile()
         time.sleep(.5)
         #enable torque
-        self.enableTorque()
+        torque_enabled = self.enableTorque()
+        if not (motion_profile_ok and torque_enabled):
+            self._attempt_bus_recovery("initial motor setup failed", force_reboot=True)
 
     def _normalize_position(self, position):
         return 2 * (float(position) - self.MIN_POS) / (self.MAX_POS - self.MIN_POS) - 1
@@ -372,13 +374,26 @@ class MotorsSynced:
 
             for motorID in target_ids:
                 hardware_error = self.readHardwareErrorStatus(motorID)
-                if hardware_error is None:
-                    if force_reboot:
+                if force_reboot:
+                    if hardware_error is None:
                         print(
                             f"Motor {motorID} hardware status unavailable after '{context}'. "
-                            "Attempting reboot anyway."
+                            "Forced recovery requested; rebooting anyway."
                         )
-                        motors_to_reboot.append(motorID)
+                    elif hardware_error == 0:
+                        print(
+                            f"Motor {motorID} reports clear hardware status after '{context}'. "
+                            "Forced recovery requested; rebooting anyway."
+                        )
+                    else:
+                        print(
+                            f"Motor {motorID} latched hardware error status "
+                            f"0x{hardware_error:02X} ({self._format_hardware_error_status(hardware_error)}). Rebooting."
+                        )
+                    motors_to_reboot.append(motorID)
+                    continue
+
+                if hardware_error is None:
                     continue
                 if hardware_error != 0:
                     print(
