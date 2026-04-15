@@ -1,7 +1,6 @@
 from dynamixel_sdk import * 
 import os
 import threading
-import numpy as np
 import time
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -73,9 +72,6 @@ class MotorsSynced:
         self.RESET_TIMEOUT_SECONDS          = float(os.getenv("SNAKE_DXL_RESET_TIMEOUT_S", "10.0"))
         self.RESET_POLL_INTERVAL_SECONDS    = float(os.getenv("SNAKE_DXL_RESET_POLL_INTERVAL_S", "0.05"))
         self.RESET_POSITION_THRESHOLD       = int(os.getenv("SNAKE_DXL_RESET_THRESHOLD", "50"))
-        self.RESET_MAX_STEP_COUNTS          = int(os.getenv("SNAKE_DXL_RESET_MAX_STEP_COUNTS", "80"))
-        self.RESET_STAGE_TIMEOUT_SECONDS    = float(os.getenv("SNAKE_DXL_RESET_STAGE_TIMEOUT_S", "4.0"))
-        self.RESET_STAGE_SETTLE_SECONDS     = float(os.getenv("SNAKE_DXL_RESET_STAGE_SETTLE_S", "0.2"))
         self.REBOOT_STATUS_RETRIES          = int(os.getenv("SNAKE_DXL_REBOOT_STATUS_RETRIES", "8"))
         self.REBOOT_STATUS_INTERVAL_SECONDS = float(os.getenv("SNAKE_DXL_REBOOT_STATUS_INTERVAL_S", "0.25"))
         self.last_good_motor_pos            = [0.0] * len(self.DXL_ID)
@@ -278,30 +274,6 @@ class MotorsSynced:
             )
 
         return success
-
-    def _build_reset_waypoints(self, start_positions, target_positions):
-        if start_positions is None or len(start_positions) != len(target_positions):
-            return [target_positions]
-
-        max_step = max(1, int(self.RESET_MAX_STEP_COUNTS))
-        deltas = [
-            target_pos - start_pos
-            for start_pos, target_pos in zip(start_positions, target_positions)
-        ]
-        max_delta = max(abs(delta) for delta in deltas)
-        stages = max(1, int(np.ceil(max_delta / max_step)))
-        waypoints = []
-
-        for stage in range(1, stages + 1):
-            fraction = stage / stages
-            waypoint = [
-                int(round(start_pos + (delta * fraction)))
-                for start_pos, delta in zip(start_positions, deltas)
-            ]
-            if not waypoints or waypoint != waypoints[-1]:
-                waypoints.append(waypoint)
-
-        return waypoints
 
     def _uses_time_based_profile(self):
         return self._drive_mode_supported and bool(self.DRIVE_MODE & 0x04)
@@ -603,34 +575,18 @@ class MotorsSynced:
                 return False
 
         start_positions = self._read_positions_raw()
-        waypoints = self._build_reset_waypoints(start_positions, target_positions)
         if start_positions is None:
-            print("No current motor positions before reset; using one direct reset command.")
+            print("No current motor positions before reset; sending one direct reset command.")
         else:
             print(
-                f"Resetting motors from {start_positions} to {target_positions} "
-                f"in {len(waypoints)} staged move(s)."
+                f"Resetting motors from {start_positions} to {target_positions}."
             )
 
-        reached_target = True
-        for waypoint_idx, waypoint in enumerate(waypoints):
-            print(f"Reset stage {waypoint_idx + 1}/{len(waypoints)} target: {waypoint}")
-            if not self.writePos(waypoint):
-                self.reportHardwareErrorStatuses(context="after failed reset command")
-                reached_target = False
-                break
-
-            stage_timeout_s = (
-                self.RESET_TIMEOUT_SECONDS
-                if waypoint_idx == len(waypoints) - 1
-                else self.RESET_STAGE_TIMEOUT_SECONDS
-            )
-            if not self.waitForTargetPositions(waypoint, timeout_s=stage_timeout_s):
-                reached_target = False
-                break
-
-            if waypoint_idx < len(waypoints) - 1:
-                time.sleep(self.RESET_STAGE_SETTLE_SECONDS)
+        if not self.writePos(target_positions):
+            self.reportHardwareErrorStatuses(context="after failed reset command")
+            reached_target = False
+        else:
+            reached_target = self.waitForTargetPositions(target_positions)
 
         if disable_after_reset:
             torque_disabled = self.disableTorque()

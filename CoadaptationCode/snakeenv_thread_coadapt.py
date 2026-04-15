@@ -156,6 +156,10 @@ class SnakeEnv(gymnasium.Env):
         self.reward_clip_min = -3.0
         self.reward_clip_max = 5.0
         self._interactive_reset_default = self._read_interactive_reset_default()
+        self._auto_motor_reset_default = self._read_bool_env(
+            'SNAKE_AUTO_MOTOR_RESET',
+            default=False,
+        )
 
                
         # init other things
@@ -191,16 +195,45 @@ class SnakeEnv(gymnasium.Env):
         self.filename = "Training_" + datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
         
      
-    def _read_interactive_reset_default(self):
-        env_value = os.getenv('SNAKE_INTERACTIVE_RESET')
+    def _read_bool_env(self, name, default):
+        env_value = os.getenv(name)
         if env_value is None:
-            return sys.stdin.isatty()
+            return default
         return env_value.strip().lower() in ('1', 'true', 'yes', 'on')
+
+    def _read_interactive_reset_default(self):
+        return self._read_bool_env('SNAKE_INTERACTIVE_RESET', sys.stdin.isatty())
 
     def _should_prompt_for_reset(self, options=None):
         if options and 'interactive_reset' in options:
             return bool(options['interactive_reset'])
         return self._interactive_reset_default
+
+    def _should_auto_motor_reset(self, options=None):
+        if options and 'auto_motor_reset' in options:
+            return bool(options['auto_motor_reset'])
+        return self._auto_motor_reset_default
+
+    def _disable_motor_torque_for_manual_reset(self):
+        SnakeEnv.motorLock.acquire()
+        try:
+            torque_disabled = SnakeEnv.motors.disableTorque()
+        finally:
+            SnakeEnv.motorLock.release()
+
+        if not torque_disabled:
+            print(
+                "Warning: disabling motor torque before manual reset reported an issue. "
+                "Check the robot before continuing."
+            )
+        return torque_disabled
+
+    def _refresh_manual_reset_motor_position(self):
+        SnakeEnv.motorLock.acquire()
+        try:
+            SnakeEnv.motorPosition = SnakeEnv.motors.readPos()
+        finally:
+            SnakeEnv.motorLock.release()
 
     def _normalize_motor_positions(self, motor_positions):
         motor_positions = np.asarray(motor_positions, dtype=np.float32)
@@ -457,9 +490,15 @@ class SnakeEnv(gymnasium.Env):
         
         super().reset(seed=seed)  # this is needed for cutom environments according to AI Gym
         self.starting_angle = None
-        if self._should_prompt_for_reset(options):
+        prompt_for_reset = self._should_prompt_for_reset(options)
+        auto_motor_reset = self._should_auto_motor_reset(options)
+
+        if prompt_for_reset or not auto_motor_reset:
+            self._disable_motor_torque_for_manual_reset()
+
+        if prompt_for_reset:
             try:
-                input('Reset robot then press a button to continue')
+                input('Reset robot by hand, then press a button to continue')
             except EOFError:
                 print('Reset prompt skipped: stdin is not interactive.')
    
@@ -467,23 +506,27 @@ class SnakeEnv(gymnasium.Env):
 
         # choose starting position of robot motors
         #startPos = random.sample(range(self.motorMin, self.motorMax), 7)
-        startPos = [2048] * len(SnakeEnv.motors.DXL_ID)
-        SnakeEnv.motorLock.acquire()
-        try:
-            reset_ok = SnakeEnv.motors.resetMotorPositions(
-                startPos,
-                disable_after_reset=True,
-            )
-        finally:
-            SnakeEnv.motorLock.release()
+        if auto_motor_reset:
+            startPos = [2048] * len(SnakeEnv.motors.DXL_ID)
+            SnakeEnv.motorLock.acquire()
+            try:
+                reset_ok = SnakeEnv.motors.resetMotorPositions(
+                    startPos,
+                    disable_after_reset=True,
+                )
+            finally:
+                SnakeEnv.motorLock.release()
 
-        if not reset_ok:
-            raise MotorFaultError(
-                "Failed to reset motors to the start position. "
-                "See the hardware error status code output above."
-            )
+            if not reset_ok:
+                raise MotorFaultError(
+                    "Failed to reset motors to the start position. "
+                    "See the hardware error status code output above."
+                )
 
-        print('motors reset to start pose')
+            print('motors reset to start pose')
+        else:
+            self._refresh_manual_reset_motor_position()
+            print('Automatic motor reset disabled; using manual/current motor pose as reset state.')
         # choose new goal position? could randomize target position?
         # self.targetPosition = 
         
