@@ -71,7 +71,7 @@ class Train():
         self.eachEpisodeCumuRewards = []
 
         self.num_init_designs = len(SnakeEnv.init_design_parameters) # number of initial design cycles
-        self.seed = int(os.getenv('SNAKE_EXPERIMENT_SEED', '12345'))
+        self.seed = int(os.getenv('SNAKE_EXPERIMENT_SEED', '12341'))
         self.eval_episodes_per_terrain = max(1, int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '5')))
         self.eval_robustness_lambda = 0.5
         # set up replay
@@ -1515,7 +1515,7 @@ if __name__ == '__main__':
     checkpoint_prefix = "2026_04_14_DesignCycle0_ep8"
 
     #set to false if new training starts
-    resuming_from_checkpoint = True
+    resuming_from_checkpoint = False
 
     if resuming_from_checkpoint:
         trainingObj.load_networks(base_path, checkpoint_prefix)
