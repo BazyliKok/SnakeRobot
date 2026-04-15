@@ -11,7 +11,7 @@ import rlkit.torch.pytorch_util as ptu
 
 ptu.set_gpu_mode(False)
 
-RESULT_TAGS = ("mixed_terrain", "carpet", "carton", "foam")
+RESULT_TAGS = ("mixed_terrain", *SnakeEnv.terrains, "carton")
 
 
 def identity(x):

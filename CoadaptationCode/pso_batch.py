@@ -58,7 +58,8 @@ class PSO_batch(Design_Optimization):
         def _terrain_state_batches():
             """Create terrain-conditioned start-state batches for robust scoring."""
             terrain_batches = []
-            for terrain_id, terrain_name in enumerate(SnakeEnv.terrains):
+            for terrain_name in SnakeEnv.terrains:
+                terrain_id = SnakeEnv.get_terrain_id(terrain_name)
                 try:
                     if hasattr(self._replay, 'random_start_batch_for_terrain'):
                         sampled = self._replay.random_start_batch_for_terrain(

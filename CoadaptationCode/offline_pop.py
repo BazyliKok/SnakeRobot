@@ -18,7 +18,7 @@ class WrappedSnakeEnv(SnakeEnv):
         )
 
 
-RESULT_TAGS = ("mixed_terrain", "carpet", "carton", "foam")
+RESULT_TAGS = ("mixed_terrain", *SnakeEnv.terrains, "carton")
 
 
 def _candidate_replay_paths(path):

@@ -40,8 +40,8 @@ class Train():
         self.training_terrain_block_size = 8
         self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size # number of episodes per design
         self.results_tag = 'mixed_terrain'
-        self.legacy_results_tags = [self.results_tag, 'carpet', 'carton', 'foam']
-        self.terrain_name_to_id = {terrain: idx for idx, terrain in enumerate(self.terrain_sequence)}
+        self.legacy_results_tags = [self.results_tag] + self.terrain_sequence + ['carton']
+        self.terrain_name_to_id = dict(SnakeEnv.terrain_name_to_id)
         self.training_terrain_block_order = []
         self.training_episode_schedule = []
         self.training_schedule_design_counter = None
@@ -816,7 +816,8 @@ class Train():
                 return None
             return obj
 
-        for terrain_idx, terrain in enumerate(self.terrain_sequence):
+        for terrain in self.terrain_sequence:
+            terrain_idx = self.terrain_name_to_id[terrain]
             SnakeEnv.set_current_terrain(terrain)
             episode_returns = []
             episode_lengths = []
@@ -1113,6 +1114,8 @@ class Train():
             'design_parameter_options': [int(option) for option in SnakeEnv.design_parameter_options],
             'observation_dim': int(np.prod(self.env.observation_space.shape)),
             'action_dim': int(np.prod(self.env.action_space.shape)),
+            'terrain_sequence': list(self.terrain_sequence),
+            'terrain_name_to_id': dict(self.terrain_name_to_id),
             'training_terrain_block_order': list(self.training_terrain_block_order),
             'training_episode_schedule': list(self.training_episode_schedule),
             'training_schedule_design_counter': self.training_schedule_design_counter,

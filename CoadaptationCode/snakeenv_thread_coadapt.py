@@ -66,7 +66,20 @@ class SnakeEnv(gymnasium.Env):
         5: 'DESIGN_5',
         7: 'DESIGN_7',
     }
-    terrains = ['carpet', 'cardboard', 'artificial_grass']
+    terrains = ['artificial_grass', 'cardboard', 'carpet', 'foam']
+    # Terrain IDs are saved in replay buffers; keep existing IDs stable.
+    terrain_name_to_id = {
+        'carpet': 0,
+        'cardboard': 1,
+        'artificial_grass': 2,
+        'foam': 3,
+    }
+    terrain_id_to_name = {
+        0: 'carpet',
+        1: 'cardboard',
+        2: 'artificial_grass',
+        3: 'foam',
+    }
     current_terrain = terrains[0]
 
     # Bounds are continuous for PSO, but values are snapped to the valid design IDs above.
@@ -802,6 +815,12 @@ class SnakeEnv(gymnasium.Env):
     @staticmethod
     def get_current_terrain():
         return SnakeEnv.current_terrain
+
+    @staticmethod
+    def get_terrain_id(terrain_name):
+        if terrain_name not in SnakeEnv.terrain_name_to_id:
+            raise ValueError(f"Unknown terrain '{terrain_name}'. Use one of {SnakeEnv.terrains}")
+        return SnakeEnv.terrain_name_to_id[terrain_name]
       
     @staticmethod 
     def get_random_design():
