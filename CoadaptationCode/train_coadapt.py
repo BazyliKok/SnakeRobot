@@ -71,7 +71,7 @@ class Train():
         self.eachEpisodeCumuRewards = []
 
         self.num_init_designs = len(SnakeEnv.init_design_parameters) # number of initial design cycles
-        self.seed = int(os.getenv('SNAKE_EXPERIMENT_SEED', '12341'))
+        self.seed = int(os.getenv('SNAKE_EXPERIMENT_SEED', '12345'))
         self.eval_episodes_per_terrain = max(1, int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '5')))
         self.eval_robustness_lambda = 0.5
         # set up replay
