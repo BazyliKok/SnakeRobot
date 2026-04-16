@@ -58,7 +58,7 @@ def plot_timestep_reward(csv_file, episode_num, run_id=None):
 
 
 if __name__ == "__main__":
-    file_names = ['/home/liza/SnakeRobot/CoadaptationCode/2025_05_07Rewards_Design1']  # Replace with your actual file names
+    file_names = ['2026_04_16Rewards_DesignCycle0_mixed_terrain']  # Replace with your actual file names
     for i in range(51):
         for file_path in file_names:
             counter = 4

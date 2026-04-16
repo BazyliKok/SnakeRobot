@@ -1551,7 +1551,7 @@ if __name__ == '__main__':
     # if resuming from a checkpoint:
     base_path = trainingObj._checkpoint_results_dir()
     #change name
-    checkpoint_prefix = "2026_04_15_DesignCycle0_ep4"
+    checkpoint_prefix = "2026_04_16_DesignCycle0_ep18"
 
     #set to false if new training starts
     resuming_from_checkpoint = True
