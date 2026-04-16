@@ -23,6 +23,7 @@ class PSO_batch(Design_Optimization):
         self._state_batch_size = 32
 
     def optimize_design(self, design, q_network, policy_network):
+        previous_replay_mode = getattr(self._replay, '_mode', 'species')
         self._replay.set_mode('start')
 
         try:
@@ -217,6 +218,7 @@ class PSO_batch(Design_Optimization):
             print('OPTIMIZED')
             print('Best categorical design:', best_design)
             print('Best categorical cost:', best_cost)
+            self._replay.set_mode(previous_replay_mode)
             return best_cost, best_design
 
         bounds = (lower_bounds, upper_bounds)
@@ -249,5 +251,6 @@ class PSO_batch(Design_Optimization):
         cost, new_design = optimizer.optimize(f_qval, print_step=100, iters=pso_iters, verbose=3) #, n_processes=2) # iter was 250
         new_design = _discretize_design(new_design)
         print('OPTIMIZED')
+        self._replay.set_mode(previous_replay_mode)
         return cost, new_design
 

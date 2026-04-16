@@ -168,7 +168,7 @@ class Train():
 
     def _initialize_run_logs(self):
         self.stateList = []
-        self.actionList = [[] for _ in range(self._action_dim())] #was 6
+        self.actionList = [[] for _ in range(self._action_dim())]
         self.designList = [[] for _ in range(len(SnakeEnv.design_parameter_bounds))]
         self.timestepRewards = []
         self.episodeCumulativeRewards = []
@@ -609,6 +609,10 @@ class Train():
             self._set_output_filenames()
 
             try:
+                if self.design_counter >= self.num_init_designs and self.optimized_params is None:
+                    self.first_train_op()
+                    break
+
                 if self.design_counter < self.num_init_designs:
                     design_cycle_completed = self.initial_design_loop()
                     if not design_cycle_completed:
@@ -628,7 +632,7 @@ class Train():
                             f"episode {self.episode_counter}; resume will retry this episode."
                         )
                         break
-            except Exception as exc:
+            except MotorFaultError as exc:
                 self._recover_motor_fault(
                     f"design cycle {self.design_counter}",
                     exc,
@@ -639,6 +643,12 @@ class Train():
                 )
                 self.design_counter += 1
                 self.episode_counter = 0
+            except Exception:
+                print(
+                    f"Unexpected error in design cycle {self.design_counter}; "
+                    "stopping without advancing the design counter."
+                )
+                raise
 
             completed_cycles += 1
 
@@ -659,7 +669,7 @@ class Train():
             """
 
             self.stateList = []
-            self.actionList = [[] for _ in range(self._action_dim())] # was 6
+            self.actionList = [[] for _ in range(self._action_dim())]
             self.timestepRewards = []
             self.cumulativeRewards = []
             self.epList = []
@@ -797,7 +807,7 @@ class Train():
                 self.livingPenaltyComponents.append(float(info.get('living_penalty', np.nan)))
                 self.noProgressPenaltyComponents.append(float(info.get('no_progress_penalty', info.get('stagnation_penalty', np.nan))))
                 self.backwardPenaltyComponents.append(float(info.get('backward_penalty', np.nan)))
-                for i in range(len(state)): #was 17
+                for i in range(len(state)):
                     self.stateList[i].append(state[i])
 
 
@@ -856,16 +866,8 @@ class Train():
     
     def first_train_op(self):
         print('in first train op')
-        iterations = self.episode_iterations 
         self.data_design_type = 'Optimized'
 
-        # set up rewards file
-        
-        #self.episodeFilename = "RewardsEachEpisode_Design{}".format(str(self.design_counter))
-        #self.episodeFilename = self.episodeFilename+self.date
-
-        self.initialize_episode()
-        
         print(f'design counter at {self.design_counter}')
         if self.design_counter == self.num_init_designs: # change this to mathc num init designs #SnakeEnv.get_number_of_init_designs: # if first time after init design loop
          
@@ -874,13 +876,6 @@ class Train():
                 self.design_counter,
                 self.episode_counter,
             )
-            reset_state, _ = self._reset_env_with_motor_recovery(
-                seed=self.current_design_optimization_seed,
-                phase=f"bootstrap design optimization design cycle {self.design_counter}",
-            )
-            if reset_state is None:
-                print("Continuing bootstrap design optimization without a fresh reset because recovery failed.")
-            
             self.optimized_params = [SnakeEnv.design_parameter_options[0]] * len(SnakeEnv.design_parameter_bounds)
             # or can: self.optimized_params = SnakeEnv.get_random_design()
           
@@ -908,9 +903,14 @@ class Train():
        
         iterations = self.episode_iterations 
         self.data_design_type = 'Optimized'
-        self.initialize_episode()
+        if self.optimized_params is None:
+            raise ValueError(
+                "No optimized design is available for train_loop. "
+                "Run first_train_op or resume from a checkpoint that contains optimized_params."
+            )
         SnakeEnv.set_new_design(self.optimized_params)
         self._print_design_installation_prompt(self.optimized_params)
+        self.initialize_episode()
         self._ensure_design_training_schedule()
 
         # Reinforcement Learning
@@ -1494,18 +1494,33 @@ class Train():
                 'random_action_prob_min',
                 self.random_action_prob_min,
             )
+            self.use_legacy_policy_warm_start = metadata.get(
+                'use_legacy_policy_warm_start',
+                self.use_legacy_policy_warm_start,
+            )
+            saved_legacy_checkpoint = metadata.get('legacy_checkpoint_prefix')
+            if saved_legacy_checkpoint:
+                self.legacy_checkpoint_prefix = saved_legacy_checkpoint
             self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size
             self._seed_global_rngs('resume', self.design_counter, self.episode_counter)
             print(f"restored design_counter={self.design_counter}, episode_counter={self.episode_counter}")
         else:
-            print("no metadata file found; counters not restored.")
+            raise FileNotFoundError(
+                f"No metadata file found for checkpoint prefix '{checkpoint_prefix}'. "
+                "Resume requires metadata so the correct design cycle, episode, "
+                "terrain schedule, and optimized design can be restored."
+            )
 
         replay_path = self._resolve_tagged_path(base_path, f'replay_{checkpoint_prefix.split("_ep")[0]}', 'pt')
         if os.path.exists(replay_path):
-            self.load_replay(replay_path)
+            if not self.load_replay(replay_path):
+                raise RuntimeError(f"Replay buffer could not be restored from {replay_path}.")
             print("Replay contains", self.replay._individual_buffer._size, "steps")
         else:
-            print("no replay buffer found.")
+            raise FileNotFoundError(
+                f"No replay buffer found for checkpoint prefix '{checkpoint_prefix}'. "
+                "Resume requires replay state so population/design optimization remains consistent."
+            )
 
 
 
@@ -1653,7 +1668,7 @@ class Train():
                         self.replay._init_state_buffer._size,
                     )
                 )
-                return
+                return True
 
             self._restore_replay_buffer(self.replay._individual_buffer, data["individual_buffer"])
             self._restore_replay_buffer(self.replay._population_buffer, data["population_buffer"])
@@ -1670,8 +1685,10 @@ class Train():
                     self.replay._init_state_buffer._size,
                 )
             )
+            return True
         except Exception as e:
             print(f"failed to load replay buffer: {e}")
+            return False
 
     def logData(self):
         xPositionList, yPositionList = SnakeEnv.returnOptiXList()
@@ -1694,7 +1711,7 @@ class Train():
         yPositionList = yPositionList[-min_len:]
         self.epList = self.epList[:min_len]
 
-        for i in range(len(self.actionList)): #was 6
+        for i in range(len(self.actionList)):
             self.actionList[i] = self.actionList[i][:min_len]
         for i in range(len(self.stateList)):
             self.stateList[i] = self.stateList[i][:min_len]

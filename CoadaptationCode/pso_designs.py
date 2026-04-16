@@ -5,13 +5,20 @@ import numpy as np
 from pso_batch import PSO_batch
 from snakeenv_thread_coadapt import SnakeEnv
 from replaybuffercoadapt import CoadaptReplayBuffer
-from rlkit.torch.networks import FlattenMlp
-from rlkit.torch.sac.policies import TanhGaussianPolicy
+from soft_actor_critic_coadapt import SoftActorCriticCoadapt
 import rlkit.torch.pytorch_util as ptu
 
 ptu.set_gpu_mode(False)
 
 RESULT_TAGS = ("mixed_terrain", *SnakeEnv.terrains, "carton")
+
+def _torch_load(path, **kwargs):
+    try:
+        return torch.load(path, weights_only=False, **kwargs)
+    except TypeError as exc:
+        if 'weights_only' not in str(exc):
+            raise
+        return torch.load(path, **kwargs)
 
 
 def identity(x):
@@ -52,7 +59,9 @@ def _resolve_replay_path(path):
 
 def _load_replay_buffer(path, preferred_buffer="population_buffer"):
     resolved_path = _resolve_replay_path(path)
-    payload = torch.load(resolved_path, map_location=torch.device("cpu"))
+    payload = _torch_load(resolved_path, map_location=torch.device("cpu"))
+    if isinstance(payload, dict) and "buffer" in payload:
+        payload = payload["buffer"]
     if preferred_buffer in payload:
         payload = payload[preferred_buffer]
     elif "individual_buffer" in payload:
@@ -99,40 +108,58 @@ REPLAY_PATHS = [
 ]
 
 print("Loading selected episodes into population buffer...")
-episode_length = 176
+episode_length = 175
+expected_obs_dim = env.observation_space.low.size
+expected_action_dim = env.action_space.low.size
+loaded_samples = 0
 for path in REPLAY_PATHS:
     resolved_path, replay_payload = _load_replay_buffer(path)
     print(f"Loading replay: {resolved_path}")
     num_samples = int(replay_payload.get('_size', len(replay_payload['observations'])))
+    observations = replay_payload['observations']
+    actions = replay_payload['actions']
+    replay_obs_dim = observations.shape[1] if observations.ndim > 1 else 0
+    replay_action_dim = actions.shape[1] if actions.ndim > 1 else 0
+    if replay_obs_dim != expected_obs_dim or replay_action_dim != expected_action_dim:
+        print(
+            "Skipping incompatible replay {}: obs/action dims {}/{} do not match current {}/{}.".format(
+                resolved_path,
+                replay_obs_dim,
+                replay_action_dim,
+                expected_obs_dim,
+                expected_action_dim,
+            )
+        )
+        continue
+
     for ep in range(15, 31):
         start_idx = ep * episode_length
         end_idx = min((ep + 1) * episode_length, num_samples)
         for i in range(start_idx, end_idx):
             pop_replay.add_sample(
-                observation=replay_payload['observations'][i],
-                action=replay_payload['actions'][i],
+                observation=observations[i],
+                action=actions[i],
                 reward=replay_payload['rewards'][i],
                 next_observation=replay_payload['next_observations'][i],
                 terminal=replay_payload['terminals'][i],
                 env_info=_terrain_env_info(replay_payload, i)
             )
+            loaded_samples += 1
 print("Done loading selected episodes.")
+
+if loaded_samples == 0:
+    raise RuntimeError(
+        "No compatible replay samples were loaded. Use replay generated with the current "
+        "8-module observation/action spaces before running pso_designs.py."
+    )
 
 design_dim = len(SnakeEnv.design_parameter_bounds)
 obs_dim = env.observation_space.low.size
 action_dim = env.action_space.low.size
 
-q_network = FlattenMlp(
-    input_size=obs_dim + action_dim,
-    output_size=1,
-    hidden_sizes=(256, 256, 256)
-)
-
-policy_network = TanhGaussianPolicy(
-    obs_dim=obs_dim,
-    action_dim=action_dim,
-    hidden_sizes=(256, 256, 256)
-)
+networks = SoftActorCriticCoadapt.create_networks(env)
+q_network = networks["population"]["qf1"]
+policy_network = networks["population"]["policy"]
 
 print("env base obs dim:", env.observation_space.low.size)
 print("design dim:", design_dim)
@@ -140,11 +167,17 @@ print("valid design IDs:", SnakeEnv.design_parameter_options)
 print("total obs dim (used):", obs_dim)
 print("action dim:", action_dim)
 print("Q input dim:", obs_dim + action_dim)
-state = torch.load("trained_pop_qf1.pt")
-print(state.keys())
 
-q_network.load_state_dict(torch.load("pop_qf1_epoch.pt", map_location=ptu.device))
-policy_network.load_state_dict(torch.load("pop_policy.pt", map_location=ptu.device))
+q_state_path = "pop_qf1_epoch.pt"
+policy_state_path = "pop_policy.pt"
+if not os.path.exists(q_state_path) or not os.path.exists(policy_state_path):
+    raise FileNotFoundError(
+        "Expected pop_qf1_epoch.pt and pop_policy.pt from offline_pop.py. "
+        "Run offline_pop.py with compatible replay first, or point this script at current checkpoints."
+    )
+
+q_network.load_state_dict(_torch_load(q_state_path, map_location=ptu.device))
+policy_network.load_state_dict(_torch_load(policy_state_path, map_location=ptu.device))
 
 #run pso
 pso = PSO_batch(pop_replay, env)

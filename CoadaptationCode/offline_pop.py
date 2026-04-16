@@ -20,6 +20,14 @@ class WrappedSnakeEnv(SnakeEnv):
 
 RESULT_TAGS = ("mixed_terrain", *SnakeEnv.terrains, "carton")
 
+def _torch_load(path, **kwargs):
+    try:
+        return torch.load(path, weights_only=False, **kwargs)
+    except TypeError as exc:
+        if 'weights_only' not in str(exc):
+            raise
+        return torch.load(path, **kwargs)
+
 
 def _candidate_replay_paths(path):
     yield path
@@ -50,7 +58,9 @@ def _resolve_replay_path(path):
 
 def _load_replay_buffer(path, preferred_buffer="population_buffer"):
     resolved_path = _resolve_replay_path(path)
-    payload = torch.load(resolved_path, map_location=torch.device("cpu"))
+    payload = _torch_load(resolved_path, map_location=torch.device("cpu"))
+    if isinstance(payload, dict) and "buffer" in payload:
+        payload = payload["buffer"]
     if preferred_buffer in payload:
         payload = payload[preferred_buffer]
     elif "individual_buffer" in payload:
@@ -100,6 +110,9 @@ pop_replay = CoadaptReplayBuffer(
 
 episode_length = 175
 design_dim = len(SnakeEnv.design_parameter_bounds)
+expected_obs_dim = env.observation_space.low.size
+expected_action_dim = env.action_space.low.size
+loaded_samples = 0
 
 for path in REPLAY_PATHS:
     resolved_path, replay_payload = _load_replay_buffer(path)
@@ -110,6 +123,20 @@ for path in REPLAY_PATHS:
     rewards = replay_payload['rewards']
     next_obs = replay_payload['next_observations']
     terminals = replay_payload['terminals']
+
+    replay_obs_dim = observations.shape[1] if observations.ndim > 1 else 0
+    replay_action_dim = actions.shape[1] if actions.ndim > 1 else 0
+    if replay_obs_dim != expected_obs_dim or replay_action_dim != expected_action_dim:
+        print(
+            "Skipping incompatible replay {}: obs/action dims {}/{} do not match current {}/{}.".format(
+                resolved_path,
+                replay_obs_dim,
+                replay_action_dim,
+                expected_obs_dim,
+                expected_action_dim,
+            )
+        )
+        continue
 
     for ep in range(17, 31):
         start = ep * episode_length
@@ -123,6 +150,13 @@ for path in REPLAY_PATHS:
                 terminal=terminals[i],
                 env_info=_terrain_env_info(replay_payload, i)
             )
+            loaded_samples += 1
+
+if loaded_samples == 0:
+    raise RuntimeError(
+        "No compatible replay samples were loaded. Use replay generated with the current "
+        "8-module observation/action spaces before running offline_pop.py."
+    )
 
 trainer = SoftActorCriticCoadapt(
     env=env,
