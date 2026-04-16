@@ -53,18 +53,27 @@ class SnakeEnv(gymnasium.Env):
     '''
        Robot has 7 motors and 8 snake segments
        Action Space: 7
-       Observation Space: 4 normalized motion features + 7 normalized motors + 9 one-hot design features
+       Observation Space: 4 normalized motion features + 7 normalized motors + 24 one-hot module-scale features
     '''
 
     # setting up design framework
-    # Design vector encodes the design type used on [head, body, tail].
+    # Design vector encodes the design type used on each interchangeable contact plate.
     # Valid design IDs are the physical Design 2, Design 5, and Design 7 variants.
     design_parameter_options = [2, 5, 7]
-    current_design = [2, 2, 2]
+    design_slot_count = 8
+    current_design = [2] * design_slot_count
     design_types = {
         2: 'DESIGN_2',
         5: 'DESIGN_5',
         7: 'DESIGN_7',
+    }
+    # Old checkpoints in results/ were trained with seven scalar plate-code inputs
+    # instead of the one-hot physical design IDs used now. These values project a
+    # current design ID back into that legacy feature space when warm-starting.
+    legacy_design_feature_values = {
+        2: 2.7,
+        5: 0.6,
+        7: 1.8,
     }
     terrains = ['artificial_grass', 'cardboard', 'carpet', 'foam']
     # Terrain IDs are saved in replay buffers; keep existing IDs stable.
@@ -84,9 +93,8 @@ class SnakeEnv(gymnasium.Env):
 
     # Bounds are continuous for PSO, but values are snapped to the valid design IDs above.
     design_parameter_bounds = [
-        (min(design_parameter_options), max(design_parameter_options)),
-        (min(design_parameter_options), max(design_parameter_options)),
-        (min(design_parameter_options), max(design_parameter_options)),
+        (min(design_parameter_options), max(design_parameter_options))
+        for _ in range(design_slot_count)
     ]
 
     _design_id_to_index = dict(
@@ -95,16 +103,16 @@ class SnakeEnv(gymnasium.Env):
 
     # Initial symmetric and asymmetric design-distribution seeds.
     init_design_parameters = [
-        [2, 2, 2],  # symmetric: Design 2 everywhere
-        [5, 5, 5],  # symmetric: Design 5 everywhere
-        [7, 7, 7],  # symmetric: Design 7 everywhere
-        [2, 5, 7],  # asymmetric
-        [2, 7, 5],  # asymmetric
-        [5, 2, 7],  # asymmetric
-        [7, 5, 2],  # asymmetric
+        [2, 2, 2, 2, 2, 2, 2, 2],  # symmetric: Design 2 everywhere
+        [5, 5, 5, 5, 5, 5, 5, 5],  # symmetric: Design 5 everywhere
+        [7, 7, 7, 7, 7, 7, 7, 7],  # symmetric: Design 7 everywhere
+        [2, 2, 5, 5, 5, 5, 7, 7],  # grouped: Design 2 head, Design 5 body, Design 7 tail
+        [7, 7, 5, 5, 5, 5, 2, 2],  # reverse grouped
+        [2, 5, 7, 2, 5, 7, 2, 5],  # alternating, starts with Design 2
+        [7, 5, 2, 7, 5, 2, 7, 5],  # alternating, starts with Design 7
     ]
 
-    design_slot_names = ['Head', 'Body', 'Tail']
+    design_slot_names = [f'Module{i + 1}' for i in range(design_slot_count)]
     config_numpy = np.eye(len(design_parameter_options), dtype=np.float32)[
         list(map(_design_id_to_index.__getitem__, current_design))
     ].reshape(-1)

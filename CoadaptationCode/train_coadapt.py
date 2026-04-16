@@ -41,6 +41,19 @@ class Train():
         self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size # number of episodes per design
         self.results_tag = 'mixed_terrain'
         self.legacy_results_tags = [self.results_tag] + self.terrain_sequence + ['carton']
+        resuming_from_checkpoint = self._read_bool_env('SNAKE_RESUME_CHECKPOINT', default=False)
+        self.use_legacy_policy_warm_start = self._read_bool_env(
+            'SNAKE_USE_LEGACY_POLICY',
+            default=not resuming_from_checkpoint,
+        )
+        self.legacy_results_dir = os.getenv(
+            'SNAKE_LEGACY_RESULTS_DIR',
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results'),
+        )
+        self.legacy_checkpoint_prefix = os.getenv(
+            'SNAKE_LEGACY_CHECKPOINT_PREFIX',
+            '2025_03_17-12_46_29_Design3_ep52',
+        )
         self.terrain_name_to_id = dict(SnakeEnv.terrain_name_to_id)
         self.training_terrain_block_order = []
         self.training_episode_schedule = []
@@ -62,6 +75,11 @@ class Train():
         self.random_action_prob_start = 0.3
         self.random_action_prob_decay = 0.02
         self.random_action_prob_min = 0.1
+        if self.use_legacy_policy_warm_start:
+            self.policy_action_warmup_episodes = int(os.getenv('SNAKE_POLICY_WARMUP_EPISODES', '0'))
+            self.random_action_prob_start = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_START', '0.10'))
+            self.random_action_prob_decay = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_DECAY', '0.01'))
+            self.random_action_prob_min = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_MIN', '0.05'))
 
         self.episodeCumulativeRewards = []  # Stores cumulative rewards per episode
         self.cumulativeRewards = []  # Stores cumulative rewards per step
@@ -87,6 +105,8 @@ class Train():
         self.rl_method = SoftActorCriticCoadapt
         self.networks = self.rl_method.create_networks(env=self.env)
         self.rl_alg = self.rl_method(env=self.env, replay=self.replay, networks=self.networks)
+        if self.use_legacy_policy_warm_start:
+            self.warm_start_from_legacy_checkpoint()
 
         # set up design variables
         self.do_alg = PSO_batch(self.replay, self.env)
@@ -96,7 +116,13 @@ class Train():
 
         self.date = datetime.now().strftime("%Y_%m_%d") # for files
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        
+
+    def _read_bool_env(self, name, default):
+        env_value = os.getenv(name)
+        if env_value is None:
+            return default
+        return env_value.strip().lower() in ('1', 'true', 'yes', 'on')
+
     def _action_dim(self):
         action_shape = getattr(self.env.action_space, "shape", None)
         if action_shape and len(action_shape) > 0:
@@ -143,7 +169,7 @@ class Train():
     def _initialize_run_logs(self):
         self.stateList = []
         self.actionList = [[] for _ in range(self._action_dim())] #was 6
-        self.designList = [[] for i in range(0,7)]
+        self.designList = [[] for _ in range(len(SnakeEnv.design_parameter_bounds))]
         self.timestepRewards = []
         self.episodeCumulativeRewards = []
         self.cumulativeRewards = []
@@ -205,6 +231,19 @@ class Train():
 
     def _checkpoint_results_dir(self):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results_bazyli')
+
+    def _print_design_installation_prompt(self, design):
+        design = SnakeEnv._coerce_design_vector(design)
+        module_assignments = [
+            f'{slot_name}=Design{int(design_id)}'
+            for slot_name, design_id in zip(SnakeEnv.design_slot_names, design)
+        ]
+        print('')
+        print('=== INSTALL SCALE CONFIGURATION ===')
+        print(f'Design cycle {self.design_counter}: ' + ', '.join(module_assignments))
+        print('Install this module-scale layout on the robot before continuing this design.')
+        print('===================================')
+        print('')
 
 
     def _build_randomized_training_schedule(self):
@@ -288,6 +327,198 @@ class Train():
             if 'weights_only' not in str(exc):
                 raise
             return torch.load(path, **kwargs)
+
+    def _legacy_checkpoint_path(self, checkpoint_kind):
+        return os.path.join(
+            self.legacy_results_dir,
+            f'{checkpoint_kind}_{self.legacy_checkpoint_prefix}.pt',
+        )
+
+    def _legacy_state_dict(self, checkpoint):
+        if hasattr(checkpoint, 'state_dict'):
+            return checkpoint.state_dict()
+        if isinstance(checkpoint, dict):
+            if all(torch.is_tensor(value) for value in checkpoint.values()):
+                return checkpoint
+        raise TypeError(f'Unsupported legacy checkpoint type: {type(checkpoint)}')
+
+    def _legacy_input_projection(self, include_actions):
+        legacy_obs_dim = 17  # old layout: 4 motion + 6 motors + 7 scalar plate IDs
+        legacy_action_dim = 6
+        target_obs_dim = int(np.prod(self.env.observation_space.shape))
+        target_action_dim = int(np.prod(self.env.action_space.shape))
+
+        obs_mapping = [None] * target_obs_dim
+
+        # Motion features keep the same first four slots.
+        for idx in range(min(4, target_obs_dim, legacy_obs_dim)):
+            obs_mapping[idx] = (idx, 1.0)
+
+        # The old robot policy acted on six motors. Keep those learned couplings
+        # for motors 1-6; motor 7 remains at the current random initialization.
+        for motor_idx in range(6):
+            target_idx = 4 + motor_idx
+            source_idx = 4 + motor_idx
+            if target_idx < target_obs_dim and source_idx < legacy_obs_dim:
+                obs_mapping[target_idx] = (source_idx, 1.0)
+
+        # Convert current one-hot scale IDs back into the scalar plate-code
+        # features used by the previous person's checkpoints.
+        options = list(SnakeEnv.design_parameter_options)
+        legacy_design_values = dict(SnakeEnv.legacy_design_feature_values)
+        target_design_start = SnakeEnv.base_feature_dim
+        legacy_design_start = 10
+        for slot_idx in range(len(SnakeEnv.design_parameter_bounds)):
+            source_idx = legacy_design_start + slot_idx
+            if source_idx >= legacy_obs_dim:
+                break
+            for option_idx, design_id in enumerate(options):
+                target_idx = target_design_start + slot_idx * len(options) + option_idx
+                if target_idx < target_obs_dim:
+                    obs_mapping[target_idx] = (
+                        source_idx,
+                        float(legacy_design_values.get(int(design_id), float(design_id))),
+                    )
+
+        if not include_actions:
+            return obs_mapping
+
+        mapping = obs_mapping + [None] * target_action_dim
+        for action_idx in range(legacy_action_dim):
+            target_idx = target_obs_dim + action_idx
+            source_idx = legacy_obs_dim + action_idx
+            if target_idx < len(mapping):
+                mapping[target_idx] = (source_idx, 1.0)
+        return mapping
+
+    def _project_legacy_input_weight(self, source_tensor, target_tensor, include_actions):
+        projected = target_tensor.clone()
+        mapping = self._legacy_input_projection(include_actions=include_actions)
+        row_count = min(projected.shape[0], source_tensor.shape[0])
+
+        for target_col, source_spec in enumerate(mapping):
+            if target_col >= projected.shape[1] or source_spec is None:
+                continue
+            source_col, scale = source_spec
+            if source_col < source_tensor.shape[1]:
+                projected[:row_count, target_col] = source_tensor[:row_count, source_col] * scale
+
+        return projected
+
+    def _copy_legacy_tensor(self, name, source_tensor, target_tensor):
+        source_tensor = source_tensor.detach().to(
+            device=target_tensor.device,
+            dtype=target_tensor.dtype,
+        )
+
+        if tuple(source_tensor.shape) == tuple(target_tensor.shape):
+            return source_tensor.clone(), 'full'
+
+        if source_tensor.ndim == 2 and target_tensor.ndim == 2:
+            source_input_dim = source_tensor.shape[1]
+            target_input_dim = target_tensor.shape[1]
+            target_obs_dim = int(np.prod(self.env.observation_space.shape))
+            target_action_dim = int(np.prod(self.env.action_space.shape))
+
+            if source_input_dim == 17 and target_input_dim == target_obs_dim:
+                return self._project_legacy_input_weight(
+                    source_tensor,
+                    target_tensor,
+                    include_actions=False,
+                ), 'projected_obs'
+
+            if source_input_dim == 23 and target_input_dim == target_obs_dim + target_action_dim:
+                return self._project_legacy_input_weight(
+                    source_tensor,
+                    target_tensor,
+                    include_actions=True,
+                ), 'projected_obs_action'
+
+        if (
+            source_tensor.ndim == target_tensor.ndim
+            and source_tensor.ndim in (1, 2)
+            and source_tensor.shape[0] == 6
+            and target_tensor.shape[0] == 7
+        ):
+            copied = target_tensor.clone()
+            copied[:6] = source_tensor[:6]
+            copied[6:] = source_tensor[-1:].expand_as(copied[6:])
+            return copied, 'partial_replicated_motor7'
+
+        if source_tensor.ndim == target_tensor.ndim:
+            copied = target_tensor.clone()
+            slices = tuple(
+                slice(0, min(source_size, target_size))
+                for source_size, target_size in zip(source_tensor.shape, target_tensor.shape)
+            )
+            copied[slices] = source_tensor[slices]
+            return copied, 'partial'
+
+        return target_tensor.clone(), 'skipped'
+
+    def _transfer_legacy_module(self, target_module, checkpoint_path):
+        checkpoint = self._load_trusted_checkpoint(
+            checkpoint_path,
+            map_location=torch.device('cpu'),
+        )
+        source_state = self._legacy_state_dict(checkpoint)
+        target_state = target_module.state_dict()
+        updated_state = {}
+        transfer_counts = Counter()
+
+        for name, target_tensor in target_state.items():
+            source_tensor = source_state.get(name)
+            if source_tensor is None or not torch.is_tensor(source_tensor):
+                updated_state[name] = target_tensor
+                transfer_counts['missing'] += 1
+                continue
+
+            copied_tensor, transfer_kind = self._copy_legacy_tensor(
+                name,
+                source_tensor,
+                target_tensor,
+            )
+            updated_state[name] = copied_tensor
+            transfer_counts[transfer_kind] += 1
+
+        target_module.load_state_dict(updated_state, strict=True)
+        return transfer_counts
+
+    def warm_start_from_legacy_checkpoint(self):
+        network_specs = {
+            'individual': [
+                ('policy', 'ind_policy'),
+                ('qf1', 'ind_qf1'),
+                ('qf2', 'ind_qf2'),
+                ('qf1_target', 'ind_qf1_tar'),
+                ('qf2_target', 'ind_qf2_tar'),
+            ],
+            'population': [
+                ('policy', 'pop_policy'),
+                ('qf1', 'pop_qf1'),
+                ('qf2', 'pop_qf2'),
+                ('qf1_target', 'pop_qf1_tar'),
+                ('qf2_target', 'pop_qf2_tar'),
+            ],
+        }
+
+        print(f'Warm-starting from legacy checkpoint: {self.legacy_checkpoint_prefix}')
+        for group_name, specs in network_specs.items():
+            for module_name, checkpoint_kind in specs:
+                checkpoint_path = self._legacy_checkpoint_path(checkpoint_kind)
+                if not os.path.exists(checkpoint_path):
+                    raise FileNotFoundError(
+                        f"Legacy checkpoint not found: {checkpoint_path}. "
+                        "Set SNAKE_LEGACY_CHECKPOINT_PREFIX or SNAKE_LEGACY_RESULTS_DIR."
+                    )
+                transfer_counts = self._transfer_legacy_module(
+                    self.networks[group_name][module_name],
+                    checkpoint_path,
+                )
+                print(
+                    f'Loaded {checkpoint_kind} into {group_name}/{module_name}: '
+                    f'{dict(transfer_counts)}'
+                )
 
     def _recover_motor_fault(self, phase, exc):
         print(f"Motor fault during {phase}: {exc}")
@@ -659,6 +890,7 @@ class Train():
             self.optimized_params = SnakeEnv._coerce_design_vector(self.optimized_params)
             print('OPTIMIZED PARAM NEW DESIGN: ', self.optimized_params)
             print('COST: ', self.cost)
+            self.save_networks()
         
 
 
@@ -677,6 +909,7 @@ class Train():
         self.data_design_type = 'Optimized'
         self.initialize_episode()
         SnakeEnv.set_new_design(self.optimized_params)
+        self._print_design_installation_prompt(self.optimized_params)
         self._ensure_design_training_schedule()
 
         # Reinforcement Learning
@@ -716,6 +949,7 @@ class Train():
         
         self.design_counter += 1 # another design
         self.episode_counter = 0
+        self.save_networks()
 
         return True
             
@@ -792,6 +1026,7 @@ class Train():
         params = SnakeEnv.init_design_parameters[self.design_counter] # choose design based on in which design cycle we are
 
         SnakeEnv.set_new_design(params)
+        self._print_design_installation_prompt(params)
         self.initialize_episode() 
         self._ensure_design_training_schedule()
 
@@ -809,6 +1044,7 @@ class Train():
         self.evaluate_policy()
         self.design_counter += 1
         self.episode_counter = 0
+        self.save_networks()
 
         
         return True
@@ -1026,15 +1262,14 @@ class Train():
             float(total_failed_eval_rollouts / total_eval_rollouts) if total_eval_rollouts > 0 else np.nan
         )
 
+        current_design = SnakeEnv.get_current_design()
         summary_row = {
             'Date': self.date,
             'Experiment_Seed': int(self.seed),
             'Training_Schedule_Seed': int(self.current_schedule_seed) if self.current_schedule_seed is not None else None,
             'Design_Counter': int(self.design_counter),
             'Episode_Counter': int(self.episode_counter),
-            'Design_Head': int(SnakeEnv.get_current_design()[0]),
-            'Design_Body': int(SnakeEnv.get_current_design()[1]),
-            'Design_Tail': int(SnakeEnv.get_current_design()[2]),
+            'Design_Config': '|'.join(str(int(value)) for value in current_design),
             'Training_Episodes_Per_Design': int(self.episode_iterations),
             'Training_Terrain_Block_Size': int(self.training_terrain_block_size),
             'Training_Terrain_Block_Order': '|'.join(self.training_terrain_block_order),
@@ -1062,6 +1297,12 @@ class Train():
             'Robustness_Lambda': float(self.eval_robustness_lambda),
             'Robustness_Score': robustness_score,
         }
+        for slot_idx, design_id in enumerate(current_design):
+            if slot_idx < len(SnakeEnv.design_slot_names):
+                slot_name = SnakeEnv.design_slot_names[slot_idx]
+            else:
+                slot_name = f'Plate{slot_idx + 1}'
+            summary_row[f'Design_{slot_name}'] = int(design_id)
 
         for terrain in self.terrain_sequence:
             total_rollouts = terrain_total_rollouts[terrain]
@@ -1162,6 +1403,9 @@ class Train():
             'random_action_prob_start': self.random_action_prob_start,
             'random_action_prob_decay': self.random_action_prob_decay,
             'random_action_prob_min': self.random_action_prob_min,
+            'use_legacy_policy_warm_start': self.use_legacy_policy_warm_start,
+            'legacy_checkpoint_prefix': self.legacy_checkpoint_prefix if self.use_legacy_policy_warm_start else None,
+            'design_slot_names': list(SnakeEnv.design_slot_names),
         }
 
         with open(os.path.join(results_dir, f'{checkpoint_prefix}_metadata_{self.results_tag}.json'), 'w') as f:
@@ -1170,6 +1414,7 @@ class Train():
         self.save_replay(os.path.join(results_dir, f'replay_{self.date}_DesignCycle{self.design_counter}_{self.results_tag}.pt'))
 
         print(f"saved networks for design cycle {self.design_counter} and episode {self.episode_counter}")
+        print(f"checkpoint prefix: {checkpoint_prefix}")
 
     def load_networks(self, base_path, checkpoint_prefix):
         self.rl_alg._ind_policy.load_state_dict(self._load_trusted_checkpoint(
@@ -1477,9 +1722,13 @@ class Train():
         rewardDF['Terrain_ID'] = [self.current_training_terrain_id] * len(self.timesteps)
         rewardDF['Terrain_Block_Index'] = [self.current_training_block_index] * len(self.timesteps)
         rewardDF['Episode_In_Terrain_Block'] = [self.current_training_episode_in_block] * len(self.timesteps)
-        rewardDF['Design_Head'] = [int(design[0])] * len(self.timesteps)
-        rewardDF['Design_Body'] = [int(design[1])] * len(self.timesteps)
-        rewardDF['Design_Tail'] = [int(design[2])] * len(self.timesteps)
+        rewardDF['Design_Config'] = ['|'.join(str(int(value)) for value in design)] * len(self.timesteps)
+        for slot_idx, design_id in enumerate(design):
+            if slot_idx < len(SnakeEnv.design_slot_names):
+                slot_name = SnakeEnv.design_slot_names[slot_idx]
+            else:
+                slot_name = f'Plate{slot_idx + 1}'
+            rewardDF[f'Design_{slot_name}'] = [int(design_id)] * len(self.timesteps)
 
         # log state variablesmotor_and_coadaptation/CoadaptationCode/train_coadapt.py
         for motor_idx, motor_actions in enumerate(self.actionList):
@@ -1550,13 +1799,19 @@ if __name__ == '__main__':
 
     # if resuming from a checkpoint:
     base_path = trainingObj._checkpoint_results_dir()
-    #change name
-    checkpoint_prefix = "2026_04_16_DesignCycle0_ep18"
+    checkpoint_prefix = os.getenv("SNAKE_CHECKPOINT_PREFIX")
 
-    #set to false if new training starts
-    resuming_from_checkpoint = True
+    # Default to a fresh legacy-warm-start run. Set SNAKE_RESUME_CHECKPOINT=1
+    # when you intentionally want to continue a saved results_bazyli checkpoint.
+    resuming_from_checkpoint = trainingObj._read_bool_env("SNAKE_RESUME_CHECKPOINT", default=False)
 
     if resuming_from_checkpoint:
+        if not checkpoint_prefix:
+            raise ValueError(
+                "SNAKE_RESUME_CHECKPOINT=1 requires SNAKE_CHECKPOINT_PREFIX. "
+                "Use the prefix printed in the saved checkpoint name, for example "
+                "2026_04_16_DesignCycle1_ep0."
+            )
         trainingObj.load_networks(base_path, checkpoint_prefix)
     else:
         trainingObj.episode_counter = 0
