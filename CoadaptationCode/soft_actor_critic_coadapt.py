@@ -83,7 +83,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         
 
     
-    def episode_init(self):
+    def episode_init(self, copy_population_to_individual=True):
            
         """ Initializations to be done before the first episode.
 
@@ -105,9 +105,12 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         #init = SoftActorCriticCoadapt._create_networks(env=self._env)
         #utils.copy_pop_to_ind(networks_pop=init, networks_ind=self._networks['individual'])
 
-        print('RESET INIT')
-        #CHANGE 6/16 try without copying network
-        utils.copy_pop_to_ind(networks_pop=self._networks['population'], networks_ind=self._networks['individual'])
+        if copy_population_to_individual:
+            print('RESET INIT')
+            #CHANGE 6/16 try without copying network
+            utils.copy_pop_to_ind(networks_pop=self._networks['population'], networks_ind=self._networks['individual'])
+        else:
+            print('RESUME INIT: keeping individual networks')
 
     def _build_trainer(self, policy, qf1, qf2, target_qf1, target_qf2):
         return SACTrainer(

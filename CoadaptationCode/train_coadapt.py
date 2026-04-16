@@ -845,9 +845,10 @@ class Train():
 
         """
         #self._rl_alg.initialize_episode(init_networks = True, copy_from_gobal = True)
-        self.rl_alg.episode_init()    
+        is_new_design = self.episode_counter in (None, 0)
+        self.rl_alg.episode_init(copy_population_to_individual=is_new_design)    
 
-        if self.episode_counter == 0:
+        if is_new_design:
             self.replay.reset_individual_buffer()
 
 
