@@ -28,9 +28,15 @@ from datetime import datetime
 def identity(x):
     return x
 
-# Older saved rlkit modules reference rlkit.torch.networks.identity during
-# unpickling. Keep that symbol available before loading trusted checkpoints.
+# Older saved rlkit modules reference rlkit.torch.networks symbols that are
+# missing from newer RLKit forks. Keep them available before loading trusted
+# checkpoints.
 rlkit_networks.identity = identity
+if (
+    not hasattr(rlkit_networks, 'FlattenMlp')
+    and hasattr(rlkit_networks, 'ConcatMlp')
+):
+    rlkit_networks.FlattenMlp = rlkit_networks.ConcatMlp
 
 class Train():
     def __init__(self):        
