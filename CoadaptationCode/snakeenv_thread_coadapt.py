@@ -94,8 +94,7 @@ class SnakeEnv(gymnasium.Env):
     # Bounds are continuous for PSO, but values are snapped to the valid design IDs above.
     design_parameter_bounds = [
         (min(design_parameter_options), max(design_parameter_options))
-        for _ in range(design_slot_count)
-    ]
+    ] * design_slot_count
 
     _design_id_to_index = dict(
         zip(design_parameter_options, range(len(design_parameter_options)))

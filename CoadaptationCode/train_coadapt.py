@@ -19,10 +19,18 @@ import random
 from pso_batch import PSO_batch
 import time
 import rlkit.torch.pytorch_util as ptu
+import rlkit.torch.networks as rlkit_networks
 from motorssynced import MotorsSynced
 from collections import Counter
 
 from datetime import datetime
+
+def identity(x):
+    return x
+
+# Older saved rlkit modules reference rlkit.torch.networks.identity during
+# unpickling. Keep that symbol available before loading trusted checkpoints.
+rlkit_networks.identity = identity
 
 class Train():
     def __init__(self):        
