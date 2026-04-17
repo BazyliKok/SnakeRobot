@@ -102,9 +102,9 @@ class SnakeEnv(gymnasium.Env):
 
     # Initial symmetric and asymmetric design-distribution seeds.
     init_design_parameters = [
+        [7, 7, 7, 7, 7, 7, 7, 7],  # symmetric: Design 7 everywhere
         [2, 2, 2, 2, 2, 2, 2, 2],  # symmetric: Design 2 everywhere
         [5, 5, 5, 5, 5, 5, 5, 5],  # symmetric: Design 5 everywhere
-        [7, 7, 7, 7, 7, 7, 7, 7],  # symmetric: Design 7 everywhere
         [2, 2, 5, 5, 5, 5, 7, 7],  # grouped modules: Design 2 front, Design 5 middle, Design 7 rear
         [7, 7, 5, 5, 5, 5, 2, 2],  # reverse grouped
         [2, 5, 7, 2, 5, 7, 2, 5],  # alternating, starts with Design 2

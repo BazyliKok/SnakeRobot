@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prefix",
-        default="2026_04_16",
+        default="2026_04_17",
         help="Date/file prefix to search for, for example 2026_04_16.",
     )
     parser.add_argument(
