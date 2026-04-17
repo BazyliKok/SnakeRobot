@@ -416,25 +416,27 @@ def plot_trajectories(rewards: pd.DataFrame, summary: pd.DataFrame, output_dir: 
 
         for ep, alpha in zip(episodes, alphas):
             ep_frame = block_rewards[block_rewards["Episode"] == ep].sort_values("Timestep")
+            x_relative = ep_frame["X_Position"] - ep_frame["X_Position"].iloc[0]
+            y_relative = ep_frame["Y_Position"] - ep_frame["Y_Position"].iloc[0]
             ax.plot(
-                ep_frame["X_Position"],
-                ep_frame["Y_Position"],
+                x_relative,
+                y_relative,
                 color=color,
                 alpha=float(alpha),
                 lw=1.35,
                 label=str(ep),
             )
             ax.scatter(
-                ep_frame["X_Position"].iloc[0],
-                ep_frame["Y_Position"].iloc[0],
+                x_relative.iloc[0],
+                y_relative.iloc[0],
                 color=color,
                 marker="o",
                 s=18,
                 alpha=float(alpha),
             )
             ax.scatter(
-                ep_frame["X_Position"].iloc[-1],
-                ep_frame["Y_Position"].iloc[-1],
+                x_relative.iloc[-1],
+                y_relative.iloc[-1],
                 color=color,
                 marker="x",
                 s=28,
@@ -442,16 +444,16 @@ def plot_trajectories(rewards: pd.DataFrame, summary: pd.DataFrame, output_dir: 
             )
 
         ax.set_title(str(block["terrain"]).replace("_", " "))
-        ax.set_xlabel("X position")
-        ax.set_ylabel("Y position")
+        ax.set_xlabel("X displacement from episode start")
+        ax.set_ylabel("Y displacement from episode start")
         ax.set_aspect("equal", adjustable="box")
         ax.legend(title="Episode", ncol=2, fontsize=7, title_fontsize=8, frameon=False)
-        finish_axis(ax, xlabel="X position")
+        finish_axis(ax, xlabel="X displacement from episode start")
 
     for ax in axes_array[n_blocks:]:
         ax.axis("off")
 
-    fig.suptitle("Logged XY trajectories by terrain", y=1.02)
+    fig.suptitle("Episode-relative XY trajectories by terrain", y=1.02)
     fig.tight_layout()
     path = output_dir / "trajectories_by_terrain.png"
     fig.savefig(path, dpi=180, bbox_inches="tight")
