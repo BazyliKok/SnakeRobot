@@ -520,13 +520,16 @@ class SnakeEnv(gymnasium.Env):
         self.starting_angle = None
         prompt_for_reset = self._should_prompt_for_reset(options)
         auto_motor_reset = self._should_auto_motor_reset(options)
+        reset_prompt = 'Reset robot by hand, then press a button to continue'
+        if options and options.get('reset_prompt'):
+            reset_prompt = str(options['reset_prompt'])
 
         if prompt_for_reset or not auto_motor_reset:
             self._disable_motor_torque_for_manual_reset()
 
         if prompt_for_reset:
             try:
-                input('Reset robot by hand, then press a button to continue')
+                input(reset_prompt)
             except EOFError:
                 print('Reset prompt skipped: stdin is not interactive.')
    

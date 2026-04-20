@@ -91,6 +91,14 @@ class Train():
         self.random_action_prob_decay = 0.02
         self.random_action_prob_min = 0.1
         self.population_training_start_design = int(os.getenv('SNAKE_POP_TRAIN_START_DESIGN', '0'))
+        self.max_motor_fault_step_retries = max(
+            0,
+            int(os.getenv('SNAKE_MOTOR_FAULT_STEP_RETRIES', '3')),
+        )
+        self.motor_fault_step_retry_delay_s = max(
+            0.0,
+            float(os.getenv('SNAKE_MOTOR_FAULT_STEP_RETRY_DELAY_S', '1.0')),
+        )
         if self.use_legacy_policy_warm_start:
             self.policy_action_warmup_episodes = int(os.getenv('SNAKE_POLICY_WARMUP_EPISODES', '0'))
             self.random_action_prob_start = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_START', '0.10'))
@@ -106,7 +114,11 @@ class Train():
 
         self.num_init_designs = len(SnakeEnv.init_design_parameters) # number of initial design cycles
         self.seed = int(os.getenv('SNAKE_EXPERIMENT_SEED', '12345'))
-        self.eval_episodes_per_terrain = max(1, int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '5')))
+        self.eval_episodes_per_terrain = max(0, int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '0')))
+        self.training_score_last_episodes_per_terrain = max(
+            1,
+            int(os.getenv('SNAKE_TRAINING_SCORE_LAST_EPISODES_PER_TERRAIN', '1')),
+        )
         self.eval_robustness_lambda = 0.5
         # set up replay
         self.replay = CoadaptReplayBuffer(
@@ -259,6 +271,203 @@ class Train():
         print(f'Design cycle {self.design_counter}: ' + ', '.join(module_assignments))
         print('Install this module-scale layout on the robot before continuing this design.')
         print('===================================')
+        print('')
+
+    def _format_design_for_terminal(self, design):
+        design = SnakeEnv._coerce_design_vector(design)
+        return ', '.join(f'Design {int(design_id)}' for design_id in design)
+
+    def _active_replay_indices(self, buffer):
+        active_size = int(buffer._size)
+        max_size = int(buffer._max_replay_buffer_size)
+        if active_size <= 0:
+            return np.array([], dtype=np.int64)
+        if active_size < max_size and buffer._top == active_size:
+            return np.arange(active_size, dtype=np.int64)
+        start = int(buffer._top)
+        return np.concatenate([
+            np.arange(start, max_size, dtype=np.int64),
+            np.arange(0, start, dtype=np.int64),
+        ])[:active_size]
+
+    def _training_rollouts_from_population_replay(self):
+        buffer = self.replay._population_buffer
+        active_indices = self._active_replay_indices(buffer)
+        if len(active_indices) == 0:
+            return []
+
+        terrain_info = None
+        if 'terrain_id' in buffer._env_info_keys:
+            terrain_info = buffer._env_infos['terrain_id'].reshape(-1)
+
+        rollouts = []
+        current_return = 0.0
+        current_length = 0
+        current_terrain_id = None
+
+        def _finish_rollout():
+            nonlocal current_return, current_length, current_terrain_id
+            if current_length <= 0:
+                return
+            terrain_id = -1 if current_terrain_id is None else int(current_terrain_id)
+            rollouts.append({
+                'terrain_id': terrain_id,
+                'terrain': SnakeEnv.terrain_id_to_name.get(terrain_id, 'unknown'),
+                'return': float(current_return),
+                'length': int(current_length),
+            })
+            current_return = 0.0
+            current_length = 0
+            current_terrain_id = None
+
+        for idx in active_indices:
+            terrain_id = -1
+            if terrain_info is not None:
+                terrain_id = int(terrain_info[idx])
+
+            if current_length > 0 and current_terrain_id != terrain_id:
+                _finish_rollout()
+
+            if current_terrain_id is None:
+                current_terrain_id = terrain_id
+
+            current_return += float(buffer._rewards[idx].reshape(-1)[0])
+            current_length += 1
+
+            if bool(buffer._terminals[idx].reshape(-1)[0]):
+                _finish_rollout()
+
+        _finish_rollout()
+        return rollouts[-self.episode_iterations:]
+
+    def _summarize_training_performance(self):
+        rollouts = self._training_rollouts_from_population_replay()
+        current_design = SnakeEnv.get_current_design()
+        selected_returns_by_terrain = {}
+        selected_lengths_by_terrain = {}
+
+        for terrain in self.terrain_sequence:
+            terrain_rollouts = [
+                rollout for rollout in rollouts
+                if rollout['terrain'] == terrain
+            ]
+            selected = terrain_rollouts[-self.training_score_last_episodes_per_terrain:]
+            selected_returns_by_terrain[terrain] = [rollout['return'] for rollout in selected]
+            selected_lengths_by_terrain[terrain] = [rollout['length'] for rollout in selected]
+
+        def _finite_mean(values):
+            arr = np.asarray(values, dtype=np.float32)
+            arr = arr[np.isfinite(arr)]
+            return float(np.mean(arr)) if len(arr) > 0 else np.nan
+
+        terrain_means = {
+            terrain: _finite_mean(selected_returns_by_terrain[terrain])
+            for terrain in self.terrain_sequence
+        }
+        terrain_lengths = {
+            terrain: _finite_mean(selected_lengths_by_terrain[terrain])
+            for terrain in self.terrain_sequence
+        }
+        valid_terrain_returns = np.asarray(
+            [value for value in terrain_means.values() if np.isfinite(value)],
+            dtype=np.float32,
+        )
+        if len(valid_terrain_returns) > 0:
+            mean_return = float(np.mean(valid_terrain_returns))
+            worst_terrain_return = float(np.min(valid_terrain_returns))
+            std_across_terrains = float(np.std(valid_terrain_returns))
+        else:
+            mean_return = np.nan
+            worst_terrain_return = np.nan
+            std_across_terrains = np.nan
+        robustness_score = float(mean_return - self.eval_robustness_lambda * std_across_terrains)
+
+        summary_row = {
+            'Date': self.date,
+            'Experiment_Seed': int(self.seed),
+            'Training_Schedule_Seed': int(self.current_schedule_seed) if self.current_schedule_seed is not None else None,
+            'Design_Counter': int(self.design_counter),
+            'Episode_Counter': int(self.episode_counter),
+            'Design_Config': '|'.join(str(int(value)) for value in current_design),
+            'Training_Episodes_Per_Design': int(self.episode_iterations),
+            'Training_Terrain_Block_Size': int(self.training_terrain_block_size),
+            'Training_Terrain_Block_Order': '|'.join(self.training_terrain_block_order),
+            'Eval_Episodes_Per_Terrain': 0,
+            'Score_Source': 'training_replay',
+            'Training_Score_Last_Episodes_Per_Terrain': int(self.training_score_last_episodes_per_terrain),
+            'Overall_Total_Eval_Rollouts': 0,
+            'Overall_Valid_Eval_Rollouts': 0,
+            'Overall_Reset_Failures': 0,
+            'Overall_Motor_Faults': 0,
+            'Overall_Failed_Eval_Rollouts': 0,
+            'Mean_Return': mean_return,
+            'Std_Across_Terrains': std_across_terrains,
+            'Worst_Terrain_Return': worst_terrain_return,
+            'Overall_Mean_Return': mean_return,
+            'Std_Across_Terrain_Means': std_across_terrains,
+            'Robustness_Lambda': float(self.eval_robustness_lambda),
+            'Robustness_Score': robustness_score,
+        }
+        for slot_idx, design_id in enumerate(current_design):
+            if slot_idx < len(SnakeEnv.design_slot_names):
+                slot_name = SnakeEnv.design_slot_names[slot_idx]
+            else:
+                slot_name = f'Plate{slot_idx + 1}'
+            summary_row[f'Design_{slot_name}'] = int(design_id)
+
+        for terrain in self.terrain_sequence:
+            returns = selected_returns_by_terrain[terrain]
+            lengths = selected_lengths_by_terrain[terrain]
+            summary_row[f'{terrain}_Training_Rollouts_Used'] = int(len(returns))
+            summary_row[f'{terrain}_Mean_Return'] = terrain_means[terrain]
+            summary_row[f'{terrain}_Mean_Length'] = terrain_lengths[terrain]
+            summary_row[f'{terrain}_Last_Return'] = float(returns[-1]) if returns else np.nan
+
+        results_dir = self._checkpoint_results_dir()
+        os.makedirs(results_dir, exist_ok=True)
+        summary_csv_path = os.path.join(results_dir, f'{self.date}_design_eval_summary.csv')
+        self._upsert_csv_rows(
+            summary_csv_path,
+            pd.DataFrame([summary_row]),
+            ['Date', 'Design_Counter', 'Episode_Counter', 'Score_Source'],
+        )
+        detail_json_path = os.path.join(
+            results_dir,
+            f'{self.date}_DesignCycle{self.design_counter}_ep{self.episode_counter}_training_score_summary.json'
+        )
+        def _json_safe(obj):
+            if isinstance(obj, dict):
+                return {key: _json_safe(value) for key, value in obj.items()}
+            if isinstance(obj, list):
+                return [_json_safe(value) for value in obj]
+            if isinstance(obj, tuple):
+                return [_json_safe(value) for value in obj]
+            if isinstance(obj, np.ndarray):
+                return [_json_safe(value) for value in obj.tolist()]
+            if isinstance(obj, np.generic):
+                obj = obj.item()
+            if isinstance(obj, float) and not np.isfinite(obj):
+                return None
+            return obj
+
+        with open(detail_json_path, 'w') as f:
+            json.dump(_json_safe({
+                'summary': summary_row,
+                'training_rollouts_used': selected_returns_by_terrain,
+                'all_reconstructed_training_rollouts': rollouts,
+            }), f, indent=2, allow_nan=False)
+
+        print('')
+        print('=== TRAINING PERFORMANCE SUMMARY ===')
+        print(
+            'Used the latest training episode(s) per terrain instead of '
+            'running extra evaluation rollouts.'
+        )
+        print(f'Last episodes per terrain: {self.training_score_last_episodes_per_terrain}')
+        print(f'Mean return across terrains: {mean_return}')
+        print(f'Worst terrain return: {worst_terrain_return}')
+        print(f'Robustness score: {robustness_score}')
+        print('====================================')
         print('')
 
 
@@ -536,7 +745,7 @@ class Train():
                     f'{dict(transfer_counts)}'
                 )
 
-    def _recover_motor_fault(self, phase, exc):
+    def _recover_motor_fault(self, phase, exc, disable_after_recovery=True):
         print(f"Motor fault during {phase}: {exc}")
 
         recovered = False
@@ -548,10 +757,73 @@ class Train():
         except Exception as recovery_exc:
             print(f"Motor recovery handler raised an exception: {recovery_exc}")
 
+        if not disable_after_recovery:
+            return recovered
+
         torque_disabled = self._disable_motor_torque_with_recovery(
             f"{phase} recovery cleanup"
         )
         return recovered and torque_disabled
+
+    def _recover_motor_fault_for_step_retry(self, phase, exc):
+        recovered = self._recover_motor_fault(
+            phase,
+            exc,
+            disable_after_recovery=False,
+        )
+        if not recovered:
+            self._disable_motor_torque_with_recovery(f"{phase} failed recovery cleanup")
+            return False
+
+        try:
+            torque_enabled = SnakeEnv.enableMotorTorque()
+        except Exception as enable_exc:
+            print(f"Failed to enable motor torque after step recovery: {enable_exc}")
+            torque_enabled = False
+
+        if not torque_enabled:
+            print("Motor torque could not be enabled after recovery; forcing cleanup.")
+            self._disable_motor_torque_with_recovery(f"{phase} torque-enable failure cleanup")
+            return False
+
+        if self.motor_fault_step_retry_delay_s > 0:
+            time.sleep(self.motor_fault_step_retry_delay_s)
+        return True
+
+    def _step_env_with_motor_recovery(self, action, step_number):
+        max_attempts = self.max_motor_fault_step_retries + 1
+
+        for attempt_idx in range(max_attempts):
+            try:
+                return self.env.step(action)
+            except MotorFaultError as exc:
+                phase = (
+                    f"training episode {self.episode_counter} step {step_number} "
+                    f"attempt {attempt_idx + 1}/{max_attempts}"
+                )
+                if attempt_idx >= max_attempts - 1:
+                    print(
+                        f"Motor fault persisted at step {step_number} after "
+                        f"{self.max_motor_fault_step_retries} same-step retries."
+                    )
+                    self._recover_motor_fault(phase, exc)
+                    return None
+
+                recovered = self._recover_motor_fault_for_step_retry(phase, exc)
+                if not recovered:
+                    print(
+                        f"Motor recovery failed at step {step_number}; "
+                        "stopping without advancing the checkpoint so this step can be retried later."
+                    )
+                    return None
+
+                print(
+                    f"Motor recovered; retrying training episode {self.episode_counter} "
+                    f"step {step_number} with the same action "
+                    f"({attempt_idx + 2}/{max_attempts})."
+                )
+
+        return None
 
     def _disable_motor_torque_with_recovery(self, phase):
         try:
@@ -589,12 +861,12 @@ class Train():
             print(f"Motor torque disable after reboot raised an exception during {phase}: {disable_exc}")
             return False
 
-    def _reset_env_with_motor_recovery(self, seed, phase, max_attempts=2):
+    def _reset_env_with_motor_recovery(self, seed, phase, max_attempts=2, options=None):
         last_exc = None
 
         for attempt_idx in range(max_attempts):
             try:
-                return self.env.reset(seed=seed)
+                return self.env.reset(seed=seed, options=options)
             except MotorFaultError as exc:
                 last_exc = exc
                 recovered = self._recover_motor_fault(
@@ -612,16 +884,22 @@ class Train():
         )
         return None, {'motor_fault': 1, 'motor_fault_message': str(last_exc)}
 
-    def run(self, stopEvent, max_design_cycles_per_run=1):
+    def run(self, stopEvent, max_design_cycles_per_run=None):
         """ Runs Fast Evolution through Actor-Critic RL algorithm.
-        Chunked execution: process up to max_design_cycles_per_run design cycles
-        in one invocation, then return so hardware and metrics can be checked.
+        Process design cycles until training finishes, the user stops the
+        process, or an optional per-launch design limit is reached.
         """
         self._initialize_run_logs()
         ptu.set_gpu_mode(False)
 
         completed_cycles = 0
-        while self.design_counter < self.design_cylces and completed_cycles < max_design_cycles_per_run:
+        while (
+            self.design_counter < self.design_cylces
+            and (
+                max_design_cycles_per_run is None
+                or completed_cycles < max_design_cycles_per_run
+            )
+        ):
             self._set_output_filenames()
 
             try:
@@ -737,7 +1015,6 @@ class Train():
             episodeRewards = 0
             episodeContRewards = []
             Done = False
-            motor_fault_ended_episode = False
             prev_action = None
             random_action_prob = self._random_action_probability()
             print(f'episode random action probability: {random_action_prob:.3f}')
@@ -785,27 +1062,14 @@ class Train():
                     self.actionList[i].append(action[i])
                 
         
-                try:
-                    next_state, reward, terminated, truncated, info = self.env.step(action) # step the action, note: reward is scaled in environment
-                except MotorFaultError as exc:
-                    recovered = self._recover_motor_fault(
-                        f"training episode {self.episode_counter} step {step_number}",
-                        exc,
-                    )
-                    if not recovered:
-                        print(
-                            "Motor recovery failed during the episode; stopping without "
-                            "advancing the checkpoint so this episode can be retried."
-                        )
-                        try:
-                            self.replay.terminate_episode()
-                        except Exception as replay_exc:
-                            print(f"Failed to terminate replay episode after motor fault: {replay_exc}")
-                        return False
-                    print("Ending current training episode early after motor recovery.")
-                    motor_fault_ended_episode = True
-                    break
-
+                step_result = self._step_env_with_motor_recovery(action, step_number)
+                if step_result is None:
+                    try:
+                        self.replay.terminate_episode()
+                    except Exception as replay_exc:
+                        print(f"Failed to terminate replay episode after motor fault: {replay_exc}")
+                    return False
+                next_state, reward, terminated, truncated, info = step_result
 
                 
                 episodeRewards += reward # accumulate rewards here to track for comparison
@@ -846,8 +1110,6 @@ class Train():
                 print('disabled torque')
             else:
                 print('Motor torque disable/recovery failed at end of training episode.')
-            if motor_fault_ended_episode:
-                print('Episode terminated early because a motor fault was detected and recovery was triggered.')
 
 
                 
@@ -955,7 +1217,8 @@ class Train():
         
             #self.plot_rewards()
 
-        # Evaluate current design before running design optimization
+        # Score current design before running design optimization.
+        # By default this uses the training replay and runs no extra rollouts.
         self.evaluate_policy()
 
         # Design Optimization
@@ -1075,6 +1338,8 @@ class Train():
 
             print(f'range {range(self.episode_counter, self.episode_iterations)}')
         
+        # Score this initial design from training replay unless explicit
+        # evaluation rollouts were requested.
         self.evaluate_policy()
         self.design_counter += 1
         self.episode_counter = 0
@@ -1088,8 +1353,31 @@ class Train():
         Runs repeated deterministic rollouts per terrain and records richer
         return, success, and rollout-length statistics for each design.
         """
+        if self.eval_episodes_per_terrain <= 0:
+            print(
+                "Scoring completed design from training replay. "
+                "No extra physical evaluation rollouts will run."
+            )
+            self._summarize_training_performance()
+            return
+
         policy = self.rl_alg.get_policy_network(self.networks['individual'])
         previous_terrain = SnakeEnv.get_current_terrain()
+        eval_design = SnakeEnv.get_current_design()
+        total_eval_rollouts = len(self.terrain_sequence) * self.eval_episodes_per_terrain
+
+        print('')
+        print('=== EVALUATION START ===')
+        print(f'Design cycle: {self.design_counter}')
+        print(f'Current design: {self._format_design_for_terminal(eval_design)}')
+        print(f'Terrains: {", ".join(self.terrain_sequence)}')
+        print(
+            f'Evaluation rollouts: {self.eval_episodes_per_terrain} per terrain '
+            f'({total_eval_rollouts} total)'
+        )
+        print(f'Max steps per rollout: {self._episode_length}')
+        print('========================')
+        print('')
 
         terrain_returns = {}
         terrain_lengths = {}
@@ -1122,7 +1410,7 @@ class Train():
                 return None
             return obj
 
-        for terrain in self.terrain_sequence:
+        for terrain_order_idx, terrain in enumerate(self.terrain_sequence):
             terrain_idx = self.terrain_name_to_id[terrain]
             SnakeEnv.set_current_terrain(terrain)
             episode_returns = []
@@ -1135,6 +1423,25 @@ class Train():
             valid_rollouts = 0
 
             for rollout_idx in range(self.eval_episodes_per_terrain):
+                rollout_number = (
+                    terrain_order_idx * self.eval_episodes_per_terrain
+                    + rollout_idx
+                    + 1
+                )
+                remaining_rollouts = total_eval_rollouts - rollout_number
+                reset_prompt = (
+                    "\n"
+                    "=== EVALUATION RESET ===\n"
+                    f"Design cycle: {self.design_counter}\n"
+                    f"Current design: {self._format_design_for_terminal(eval_design)}\n"
+                    f"Terrain: {terrain} ({terrain_order_idx + 1}/{len(self.terrain_sequence)})\n"
+                    f"Evaluation rollout on this terrain: {rollout_idx + 1}/{self.eval_episodes_per_terrain}\n"
+                    f"Total evaluation rollout: {rollout_number}/{total_eval_rollouts}\n"
+                    f"Remaining after this rollout: {remaining_rollouts}\n"
+                    f"Max steps this rollout: {self._episode_length}\n"
+                    f"Put the robot on {terrain}, reset it by hand, then press Enter to start this evaluation rollout."
+                )
+                print(reset_prompt)
                 eval_seed = self._stable_seed(
                     'eval_rollout',
                     self.design_counter,
@@ -1145,6 +1452,7 @@ class Train():
                 state, _ = self._reset_env_with_motor_recovery(
                     seed=eval_seed,
                     phase=f"evaluation terrain {terrain} rollout {rollout_idx}",
+                    options={'reset_prompt': reset_prompt},
                 )
                 if state is None:
                     print(
@@ -1434,10 +1742,14 @@ class Train():
             'training_schedule_seed': self.current_schedule_seed,
             'policy_action_warmup_episodes': self.policy_action_warmup_episodes,
             'training_update_warmup_episodes': self.training_update_warmup_episodes,
+            'eval_episodes_per_terrain': self.eval_episodes_per_terrain,
+            'training_score_last_episodes_per_terrain': self.training_score_last_episodes_per_terrain,
             'random_action_prob_start': self.random_action_prob_start,
             'random_action_prob_decay': self.random_action_prob_decay,
             'random_action_prob_min': self.random_action_prob_min,
             'population_training_start_design': self.population_training_start_design,
+            'max_motor_fault_step_retries': self.max_motor_fault_step_retries,
+            'motor_fault_step_retry_delay_s': self.motor_fault_step_retry_delay_s,
             'sac_batch_size': int(self.rl_alg._batch_size),
             'individual_sac_updates': int(self.rl_alg._nmbr_ind_updates),
             'population_sac_updates': int(self.rl_alg._nmbr_pop_updates),
@@ -1524,6 +1836,27 @@ class Train():
                 'training_update_warmup_episodes',
                 self.training_update_warmup_episodes,
             )
+            self.eval_episodes_per_terrain = max(
+                0,
+                int(
+                    os.getenv(
+                        'SNAKE_EVAL_EPISODES_PER_TERRAIN',
+                        self.eval_episodes_per_terrain,
+                    )
+                )
+            )
+            self.training_score_last_episodes_per_terrain = max(
+                1,
+                int(
+                    os.getenv(
+                        'SNAKE_TRAINING_SCORE_LAST_EPISODES_PER_TERRAIN',
+                        metadata.get(
+                            'training_score_last_episodes_per_terrain',
+                            self.training_score_last_episodes_per_terrain,
+                        ),
+                    )
+                )
+            )
             self.random_action_prob_start = metadata.get(
                 'random_action_prob_start',
                 self.random_action_prob_start,
@@ -1541,6 +1874,30 @@ class Train():
                 self.population_training_start_design,
             )
             self.population_training_start_design = int(self.population_training_start_design)
+            self.max_motor_fault_step_retries = max(
+                0,
+                int(
+                    os.getenv(
+                        'SNAKE_MOTOR_FAULT_STEP_RETRIES',
+                        metadata.get(
+                            'max_motor_fault_step_retries',
+                            self.max_motor_fault_step_retries,
+                        ),
+                    )
+                )
+            )
+            self.motor_fault_step_retry_delay_s = max(
+                0.0,
+                float(
+                    os.getenv(
+                        'SNAKE_MOTOR_FAULT_STEP_RETRY_DELAY_S',
+                        metadata.get(
+                            'motor_fault_step_retry_delay_s',
+                            self.motor_fault_step_retry_delay_s,
+                        ),
+                    )
+                )
+            )
             self.use_legacy_policy_warm_start = metadata.get(
                 'use_legacy_policy_warm_start',
                 self.use_legacy_policy_warm_start,
@@ -1882,8 +2239,13 @@ if __name__ == '__main__':
         trainingObj.episode_counter = 0
         print("Starting fresh: episode_counter set to 0")
 
-    # Chunked execution: run a small number of design cycles per launch.
-    designs_per_run = 1
+    designs_per_run_env = os.getenv('SNAKE_DESIGNS_PER_RUN', '').strip().lower()
+    if designs_per_run_env in ('', '0', 'all', 'none'):
+        designs_per_run = None
+        print('Design cycles per run: all remaining cycles.')
+    else:
+        designs_per_run = max(1, int(designs_per_run_env))
+        print(f'Design cycles per run: {designs_per_run}')
 
     # run threads as before
     motorThread = threading.Thread(target=trainingObj.motorPos, args=(stopEvent,), daemon=True) 
