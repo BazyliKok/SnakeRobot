@@ -5,6 +5,7 @@ from rlkit.torch.sac.policies import TanhGaussianPolicy
 # from rlkit.torch.sac.sac import SoftActorCritic
 from rlkit.torch.networks import ConcatMlp
 import numpy as np
+import os
 from rl_algorithm import RLAlgorithm
 # from rlkit.torch.sac.sac import SACTrainer
 from SACTrainer import SACTrainer
@@ -45,14 +46,16 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         self._pop_policy = networks['population']['policy']
 
         # define training parameters
-        self._batch_size = 32
-        self._nmbr_ind_updates = 100  # cap on individual SAC updates per train call
-        self._nmbr_pop_updates = 50  # cap on population SAC updates per train call
-        self._sac_trainer_kwargs = dict(
+        self._batch_size = int(os.getenv('SNAKE_SAC_BATCH_SIZE', '32'))
+        self._nmbr_ind_updates = int(os.getenv('SNAKE_IND_UPDATES', '40'))
+        self._nmbr_pop_updates = int(os.getenv('SNAKE_POP_UPDATES', '8'))
+        ind_policy_lr = float(os.getenv('SNAKE_IND_POLICY_LR', '3e-4'))
+        ind_qf_lr = float(os.getenv('SNAKE_IND_QF_LR', '5e-4'))
+        pop_policy_lr = float(os.getenv('SNAKE_POP_POLICY_LR', '1e-4'))
+        pop_qf_lr = float(os.getenv('SNAKE_POP_QF_LR', '3e-4'))
+        common_trainer_kwargs = dict(
             discount=0.99,
             reward_scale=1.0,
-            policy_lr=1E-3,
-            qf_lr=1E-3,
             optimizer_class=optim.Adam,
             soft_target_tau=.01,
             target_update_period=1,
@@ -62,6 +65,16 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             target_entropy=None,
             alpha=0.1,
         )
+        self._ind_sac_trainer_kwargs = dict(
+            common_trainer_kwargs,
+            policy_lr=ind_policy_lr,
+            qf_lr=ind_qf_lr,
+        )
+        self._pop_sac_trainer_kwargs = dict(
+            common_trainer_kwargs,
+            policy_lr=pop_policy_lr,
+            qf_lr=pop_qf_lr,
+        )
 
         # set up trainer 
         self._ind_algorithm = self._build_trainer(
@@ -70,6 +83,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             qf2=self._ind_qf2,
             target_qf1=self._ind_qf1_target,
             target_qf2=self._ind_qf2_target,
+            trainer_kwargs=self._ind_sac_trainer_kwargs,
         )
 
         self._pop_algorithm = self._build_trainer(
@@ -78,6 +92,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             qf2=self._pop_qf2,
             target_qf1=self._pop_qf1_target,
             target_qf2=self._pop_qf2_target,
+            trainer_kwargs=self._pop_sac_trainer_kwargs,
         )
 
         
@@ -97,6 +112,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             qf2=self._ind_qf2,
             target_qf1=self._ind_qf1_target,
             target_qf2=self._ind_qf2_target,
+            trainer_kwargs=self._ind_sac_trainer_kwargs,
         )
 
         self._networks['individual'] 
@@ -112,7 +128,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         else:
             print('RESUME INIT: keeping individual networks')
 
-    def _build_trainer(self, policy, qf1, qf2, target_qf1, target_qf2):
+    def _build_trainer(self, policy, qf1, qf2, target_qf1, target_qf2, trainer_kwargs):
         return SACTrainer(
             env=self._env,
             policy=policy,
@@ -120,7 +136,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             qf2=qf2,
             target_qf1=target_qf1,
             target_qf2=target_qf2,
-            **self._sac_trainer_kwargs,
+            **trainer_kwargs,
         )
         
   

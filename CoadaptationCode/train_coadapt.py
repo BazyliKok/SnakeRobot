@@ -81,6 +81,7 @@ class Train():
         self.current_episode_seed = None
         self.current_update_seed = None
         self.current_design_optimization_seed = None
+        self._last_individual_reset_key = None
 
         # Keep commands changing so the robot does not lock into one saturated pose.
         self.action_noise_std = 0.10
@@ -89,6 +90,7 @@ class Train():
         self.random_action_prob_start = 0.3
         self.random_action_prob_decay = 0.02
         self.random_action_prob_min = 0.1
+        self.population_training_start_design = int(os.getenv('SNAKE_POP_TRAIN_START_DESIGN', '0'))
         if self.use_legacy_policy_warm_start:
             self.policy_action_warmup_episodes = int(os.getenv('SNAKE_POLICY_WARMUP_EPISODES', '0'))
             self.random_action_prob_start = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_START', '0.10'))
@@ -869,14 +871,31 @@ class Train():
 
         """
         #self._rl_alg.initialize_episode(init_networks = True, copy_from_gobal = True)
-        is_new_design = self.episode_counter in (None, 0)
-        self.rl_alg.episode_init(copy_population_to_individual=is_new_design)    
-
-        if is_new_design:
-            self.replay.reset_individual_buffer()
+        if not self._reset_individual_for_terrain_block_if_needed():
+            self.rl_alg.episode_init(copy_population_to_individual=False)
 
 
         self.data_rewards = []
+
+    def _reset_individual_for_terrain_block_if_needed(self):
+        episode_idx = 0 if self.episode_counter is None else int(self.episode_counter)
+        block_size = max(1, int(self.training_terrain_block_size))
+        if episode_idx % block_size != 0:
+            return False
+
+        block_idx = episode_idx // block_size
+        reset_key = (int(self.design_counter), int(block_idx))
+        if reset_key == self._last_individual_reset_key:
+            return False
+
+        print(
+            f"Resetting individual policy from population for design cycle "
+            f"{self.design_counter}, terrain block {block_idx + 1}."
+        )
+        self.rl_alg.episode_init(copy_population_to_individual=True)
+        self.replay.reset_individual_buffer()
+        self._last_individual_reset_key = reset_key
+        return True
     
     def first_train_op(self):
         print('in first train op')
@@ -972,6 +991,7 @@ class Train():
     def train_single_iteration(self):
         experience_collected = False
 
+        self._reset_individual_for_terrain_block_if_needed()
         self.replay.set_mode("species")
         try:
             experience_collected = self.collect_training_experience() # collect data
@@ -994,10 +1014,11 @@ class Train():
             )
             return False
         
-        if self.design_counter >= 2: # only train population after certain number of designs, in this case 2
-            train_pop = True
-        else:
-            train_pop = False
+        train_pop = self.design_counter >= self.population_training_start_design
+        print(
+            f'population SAC training enabled: {train_pop} '
+            f'(start design {self.population_training_start_design})'
+        )
         
         print('train single iteration check if training warmup is complete')
         if experience_collected and self._should_train_updates():  # can start training after enough full episodes are collected
@@ -1418,6 +1439,7 @@ class Train():
             'random_action_prob_start': self.random_action_prob_start,
             'random_action_prob_decay': self.random_action_prob_decay,
             'random_action_prob_min': self.random_action_prob_min,
+            'population_training_start_design': self.population_training_start_design,
             'use_legacy_policy_warm_start': self.use_legacy_policy_warm_start,
             'legacy_checkpoint_prefix': self.legacy_checkpoint_prefix if self.use_legacy_policy_warm_start else None,
             'design_slot_names': list(SnakeEnv.design_slot_names),
@@ -1508,6 +1530,11 @@ class Train():
                 'random_action_prob_min',
                 self.random_action_prob_min,
             )
+            self.population_training_start_design = metadata.get(
+                'population_training_start_design',
+                self.population_training_start_design,
+            )
+            self.population_training_start_design = int(self.population_training_start_design)
             self.use_legacy_policy_warm_start = metadata.get(
                 'use_legacy_policy_warm_start',
                 self.use_legacy_policy_warm_start,

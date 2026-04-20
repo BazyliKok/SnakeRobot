@@ -1,6 +1,7 @@
 from replaybuffer import EnvReplayBuffer
 from rlkit.data_management.replay_buffer import ReplayBuffer
 import numpy as np
+import os
 import torch
 
 class CoadaptReplayBuffer(ReplayBuffer):
@@ -22,6 +23,13 @@ class CoadaptReplayBuffer(ReplayBuffer):
             env_info_sizes['terrain_id'] = 1
 
         self._env_info_sizes = env_info_sizes
+        self._individual_batch_fraction = float(
+            np.clip(
+                float(os.getenv('SNAKE_INDIVIDUAL_BATCH_FRACTION', '0.8')),
+                0.0,
+                1.0,
+            )
+        )
 
         # default mode 
         self._mode = "species"
@@ -215,14 +223,23 @@ class CoadaptReplayBuffer(ReplayBuffer):
         :return:
         """
         if self._mode == "species":
-            # TODO: Figure out what to put here
-            ind_batch_size = int(np.floor(batch_size * 0.9))
-            pop_batch_size = int(np.ceil(batch_size * 0.1))
-            pop = self._balanced_random_batch(self._population_buffer, pop_batch_size)
-            spec = self._balanced_random_batch(self._individual_buffer, ind_batch_size)
-            for key, item in pop.items():
-                pop[key] = np.concatenate([pop[key], spec[key]], axis=0)
-            return pop
+            ind_batch_size = int(round(batch_size * self._individual_batch_fraction))
+            ind_batch_size = min(max(ind_batch_size, 0), batch_size)
+            pop_batch_size = batch_size - ind_batch_size
+
+            batches = []
+            if pop_batch_size > 0:
+                batches.append(self._balanced_random_batch(self._population_buffer, pop_batch_size))
+            if ind_batch_size > 0:
+                batches.append(self._balanced_random_batch(self._individual_buffer, ind_batch_size))
+
+            if len(batches) == 1:
+                return batches[0]
+
+            batch = {}
+            for key in batches[0]:
+                batch[key] = np.concatenate([item[key] for item in batches], axis=0)
+            return batch
  
     
         elif self._mode == "population":
