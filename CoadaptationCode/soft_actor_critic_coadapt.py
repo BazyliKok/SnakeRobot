@@ -100,10 +100,10 @@ class SoftActorCriticCoadapt(RLAlgorithm):
     
     def episode_init(self, copy_population_to_individual=True):
            
-        """ Initializations to be done before the first episode.
+        """Initialize the individual trainer for a fresh adaptation phase.
 
-        In this case basically creates a fresh instance of SAC for the
-        individual networks and copies the values of the target network.
+        When copy_population_to_individual is true, the individual networks
+        start from the current population networks before adapting locally.
         """
         ptu.set_gpu_mode(False)
         self._ind_algorithm = self._build_trainer(
@@ -115,18 +115,11 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             trainer_kwargs=self._ind_sac_trainer_kwargs,
         )
 
-        self._networks['individual'] 
-
-        # comment these back in if want to change reset networks at beginning
-        #init = SoftActorCriticCoadapt._create_networks(env=self._env)
-        #utils.copy_pop_to_ind(networks_pop=init, networks_ind=self._networks['individual'])
-
         if copy_population_to_individual:
-            print('RESET INIT')
-            #CHANGE 6/16 try without copying network
+            print('Copying population networks into individual networks')
             utils.copy_pop_to_ind(networks_pop=self._networks['population'], networks_ind=self._networks['individual'])
         else:
-            print('RESUME INIT: keeping individual networks')
+            print('Keeping individual networks')
 
     def _build_trainer(self, policy, qf1, qf2, target_qf1, target_qf2, trainer_kwargs):
         return SACTrainer(

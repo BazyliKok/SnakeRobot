@@ -863,14 +863,12 @@ class Train():
 
 
     def initialize_episode(self):
-        """ Initializations required before the first episode.
+        """Initialize training state before entering a design's episode loop.
 
-        Should be called before the first episode of a new design is
-        executed. Resets variables such as _data_rewards for logging purposes
-        etc.
+        Individual policy/replay resets are handled at terrain-block
+        boundaries so terrain adaptation does not leak into the next block.
 
         """
-        #self._rl_alg.initialize_episode(init_networks = True, copy_from_gobal = True)
         if not self._reset_individual_for_terrain_block_if_needed():
             self.rl_alg.episode_init(copy_population_to_individual=False)
 
@@ -1440,6 +1438,14 @@ class Train():
             'random_action_prob_decay': self.random_action_prob_decay,
             'random_action_prob_min': self.random_action_prob_min,
             'population_training_start_design': self.population_training_start_design,
+            'sac_batch_size': int(self.rl_alg._batch_size),
+            'individual_sac_updates': int(self.rl_alg._nmbr_ind_updates),
+            'population_sac_updates': int(self.rl_alg._nmbr_pop_updates),
+            'individual_policy_lr': self.rl_alg._ind_sac_trainer_kwargs['policy_lr'],
+            'individual_qf_lr': self.rl_alg._ind_sac_trainer_kwargs['qf_lr'],
+            'population_policy_lr': self.rl_alg._pop_sac_trainer_kwargs['policy_lr'],
+            'population_qf_lr': self.rl_alg._pop_sac_trainer_kwargs['qf_lr'],
+            'individual_batch_fraction': self.replay._individual_batch_fraction,
             'use_legacy_policy_warm_start': self.use_legacy_policy_warm_start,
             'legacy_checkpoint_prefix': self.legacy_checkpoint_prefix if self.use_legacy_policy_warm_start else None,
             'design_slot_names': list(SnakeEnv.design_slot_names),
