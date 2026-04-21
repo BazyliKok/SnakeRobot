@@ -83,14 +83,46 @@ class Train():
         self.current_design_optimization_seed = None
         self._last_individual_reset_key = None
 
-        # Keep commands changing so the robot does not lock into one saturated pose.
-        self.action_noise_std = 0.10
-        self.repeat_action_eps = 0.02
-        self.repeat_action_perturb_std = 0.08
+        # Keep some exploration for fresh runs. For legacy warm starts, rely on
+        # the SAC policy's own stochasticity and avoid extra hand-added jitter
+        # so the old gait is preserved as much as possible.
+        default_action_noise_std = '0.0' if self.use_legacy_policy_warm_start else '0.10'
+        default_repeat_action_eps = '0.0' if self.use_legacy_policy_warm_start else '0.02'
+        default_repeat_action_perturb_std = '0.0' if self.use_legacy_policy_warm_start else '0.08'
+        self.action_noise_std = max(
+            0.0,
+            float(os.getenv('SNAKE_ACTION_NOISE_STD', default_action_noise_std)),
+        )
+        self.repeat_action_eps = max(
+            0.0,
+            float(os.getenv('SNAKE_REPEAT_ACTION_EPS', default_repeat_action_eps)),
+        )
+        self.repeat_action_perturb_std = max(
+            0.0,
+            float(os.getenv('SNAKE_REPEAT_ACTION_PERTURB_STD', default_repeat_action_perturb_std)),
+        )
         self.random_action_prob_start = 0.3
         self.random_action_prob_decay = 0.02
         self.random_action_prob_min = 0.1
-        self.population_training_start_design = int(os.getenv('SNAKE_POP_TRAIN_START_DESIGN', '0'))
+        default_pop_train_start_design = '2' if self.use_legacy_policy_warm_start else '0'
+        default_terrain_prefill_episodes = '1' if self.use_legacy_policy_warm_start else '0'
+        default_policy_warmup_episodes = '0' if self.use_legacy_policy_warm_start else str(self.policy_action_warmup_episodes)
+        default_update_warmup_episodes = '0' if self.use_legacy_policy_warm_start else str(self.training_update_warmup_episodes)
+        self.population_training_start_design = int(
+            os.getenv('SNAKE_POP_TRAIN_START_DESIGN', default_pop_train_start_design)
+        )
+        self.terrain_prefill_episodes = max(
+            0,
+            int(os.getenv('SNAKE_TERRAIN_PREFILL_EPISODES', default_terrain_prefill_episodes)),
+        )
+        self.policy_action_warmup_episodes = max(
+            0,
+            int(os.getenv('SNAKE_POLICY_WARMUP_EPISODES', default_policy_warmup_episodes)),
+        )
+        self.training_update_warmup_episodes = max(
+            0,
+            int(os.getenv('SNAKE_UPDATE_WARMUP_EPISODES', default_update_warmup_episodes)),
+        )
         self.max_motor_fault_step_retries = max(
             0,
             int(os.getenv('SNAKE_MOTOR_FAULT_STEP_RETRIES', '3')),
@@ -100,10 +132,9 @@ class Train():
             float(os.getenv('SNAKE_MOTOR_FAULT_STEP_RETRY_DELAY_S', '1.0')),
         )
         if self.use_legacy_policy_warm_start:
-            self.policy_action_warmup_episodes = int(os.getenv('SNAKE_POLICY_WARMUP_EPISODES', '0'))
-            self.random_action_prob_start = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_START', '0.10'))
-            self.random_action_prob_decay = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_DECAY', '0.01'))
-            self.random_action_prob_min = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_MIN', '0.05'))
+            self.random_action_prob_start = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_START', '0.0'))
+            self.random_action_prob_decay = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_DECAY', '0.0'))
+            self.random_action_prob_min = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_MIN', '0.0'))
 
         self.episodeCumulativeRewards = []  # Stores cumulative rewards per episode
         self.cumulativeRewards = []  # Stores cumulative rewards per step
@@ -170,7 +201,21 @@ class Train():
 
     def _should_train_updates(self):
         episode_idx = 0 if self.episode_counter is None else int(self.episode_counter)
-        return episode_idx >= self.training_update_warmup_episodes
+        if episode_idx < self.training_update_warmup_episodes:
+            return False
+
+        episode_in_block = (
+            0 if self.current_training_episode_in_block is None
+            else int(self.current_training_episode_in_block)
+        )
+        return episode_in_block >= self.terrain_prefill_episodes
+
+    def _is_terrain_prefill_episode(self):
+        episode_in_block = (
+            0 if self.current_training_episode_in_block is None
+            else int(self.current_training_episode_in_block)
+        )
+        return episode_in_block < self.terrain_prefill_episodes
 
     def _stable_seed(self, *components):
         modulus = 2 ** 32
@@ -1299,6 +1344,18 @@ class Train():
             self.popq2loss.extend(popq2loss)
             self.poppolicyloss.extend(poppolicyloss)
             self.epListLoss.extend([self.episode_counter] * len(q1loss))
+        elif experience_collected:
+            if (0 if self.episode_counter is None else int(self.episode_counter)) < self.training_update_warmup_episodes:
+                print(
+                    f"Skipping SAC updates for global warmup episode "
+                    f"{self.episode_counter + 1}/{self.training_update_warmup_episodes}."
+                )
+            elif self._is_terrain_prefill_episode():
+                print(
+                    f"Terrain prefill episode "
+                    f"{self.current_training_episode_in_block + 1}/{self.terrain_prefill_episodes} "
+                    f"for {self.current_training_terrain}: collecting replay only, no SAC updates."
+                )
         self.logTrainLoss() # log data
         self.episode_counter += 1
 
@@ -1748,6 +1805,10 @@ class Train():
             'random_action_prob_decay': self.random_action_prob_decay,
             'random_action_prob_min': self.random_action_prob_min,
             'population_training_start_design': self.population_training_start_design,
+            'terrain_prefill_episodes': self.terrain_prefill_episodes,
+            'action_noise_std': self.action_noise_std,
+            'repeat_action_eps': self.repeat_action_eps,
+            'repeat_action_perturb_std': self.repeat_action_perturb_std,
             'max_motor_fault_step_retries': self.max_motor_fault_step_retries,
             'motor_fault_step_retry_delay_s': self.motor_fault_step_retry_delay_s,
             'sac_batch_size': int(self.rl_alg._batch_size),
@@ -1869,11 +1930,6 @@ class Train():
                 'random_action_prob_min',
                 self.random_action_prob_min,
             )
-            self.population_training_start_design = metadata.get(
-                'population_training_start_design',
-                self.population_training_start_design,
-            )
-            self.population_training_start_design = int(self.population_training_start_design)
             self.max_motor_fault_step_retries = max(
                 0,
                 int(
@@ -1905,9 +1961,68 @@ class Train():
             saved_legacy_checkpoint = metadata.get('legacy_checkpoint_prefix')
             if saved_legacy_checkpoint:
                 self.legacy_checkpoint_prefix = saved_legacy_checkpoint
+            default_pop_train_start_design = '2' if self.use_legacy_policy_warm_start else '0'
+            default_terrain_prefill_episodes = '1' if self.use_legacy_policy_warm_start else '0'
+            default_action_noise_std = '0.0' if self.use_legacy_policy_warm_start else '0.10'
+            default_repeat_action_eps = '0.0' if self.use_legacy_policy_warm_start else '0.02'
+            default_repeat_action_perturb_std = '0.0' if self.use_legacy_policy_warm_start else '0.08'
+            default_policy_warmup_episodes = '0' if self.use_legacy_policy_warm_start else str(self.policy_action_warmup_episodes)
+            default_update_warmup_episodes = '0' if self.use_legacy_policy_warm_start else str(self.training_update_warmup_episodes)
+            default_random_action_prob_start = '0.0' if self.use_legacy_policy_warm_start else str(self.random_action_prob_start)
+            default_random_action_prob_decay = '0.0' if self.use_legacy_policy_warm_start else str(self.random_action_prob_decay)
+            default_random_action_prob_min = '0.0' if self.use_legacy_policy_warm_start else str(self.random_action_prob_min)
+            self.population_training_start_design = int(
+                os.getenv('SNAKE_POP_TRAIN_START_DESIGN', default_pop_train_start_design)
+            )
+            self.terrain_prefill_episodes = max(
+                0,
+                int(os.getenv('SNAKE_TERRAIN_PREFILL_EPISODES', default_terrain_prefill_episodes))
+            )
+            self.policy_action_warmup_episodes = max(
+                0,
+                int(os.getenv('SNAKE_POLICY_WARMUP_EPISODES', default_policy_warmup_episodes)),
+            )
+            self.training_update_warmup_episodes = max(
+                0,
+                int(os.getenv('SNAKE_UPDATE_WARMUP_EPISODES', default_update_warmup_episodes)),
+            )
+            self.random_action_prob_start = max(
+                0.0,
+                float(os.getenv('SNAKE_RANDOM_ACTION_PROB_START', default_random_action_prob_start)),
+            )
+            self.random_action_prob_decay = max(
+                0.0,
+                float(os.getenv('SNAKE_RANDOM_ACTION_PROB_DECAY', default_random_action_prob_decay)),
+            )
+            self.random_action_prob_min = max(
+                0.0,
+                float(os.getenv('SNAKE_RANDOM_ACTION_PROB_MIN', default_random_action_prob_min)),
+            )
+            self.action_noise_std = max(
+                0.0,
+                float(os.getenv('SNAKE_ACTION_NOISE_STD', default_action_noise_std)),
+            )
+            self.repeat_action_eps = max(
+                0.0,
+                float(os.getenv('SNAKE_REPEAT_ACTION_EPS', default_repeat_action_eps)),
+            )
+            self.repeat_action_perturb_std = max(
+                0.0,
+                float(os.getenv('SNAKE_REPEAT_ACTION_PERTURB_STD', default_repeat_action_perturb_std)),
+            )
             self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size
             self._seed_global_rngs('resume', self.design_counter, self.episode_counter)
             print(f"restored design_counter={self.design_counter}, episode_counter={self.episode_counter}")
+            print(
+                "resume training knobs -> "
+                f"population start design: {self.population_training_start_design}, "
+                f"terrain prefill episodes: {self.terrain_prefill_episodes}, "
+                f"policy warmup episodes: {self.policy_action_warmup_episodes}, "
+                f"update warmup episodes: {self.training_update_warmup_episodes}, "
+                f"random action start/min: {self.random_action_prob_start:.3f}/{self.random_action_prob_min:.3f}, "
+                f"action_noise_std: {self.action_noise_std:.3f}, "
+                f"repeat_action_perturb_std: {self.repeat_action_perturb_std:.3f}"
+            )
         else:
             raise FileNotFoundError(
                 f"No metadata file found for checkpoint prefix '{checkpoint_prefix}'. "

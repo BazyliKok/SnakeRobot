@@ -161,7 +161,7 @@ class SnakeEnv(gymnasium.Env):
         self.heading_penalty_scale = 0.05
         self.terminal_reward_bonus = 5.0
         self.reward_clip_min = -3.0
-        self.reward_clip_max = 5.0
+        self.reward_clip_max = 6.0
         self._interactive_reset_default = self._read_interactive_reset_default()
         self._auto_motor_reset_default = self._read_bool_env(
             'SNAKE_AUTO_MOTOR_RESET',

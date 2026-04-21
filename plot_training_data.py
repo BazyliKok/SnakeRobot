@@ -44,6 +44,15 @@ DEFAULT_COLORS = [
     "#9C755F",
 ]
 
+REWARD_COMPONENT_SCALES = {
+    "sum_Progress_Reward": 1.0,
+    "sum_X_Drift_Penalty": -0.10,
+    "sum_Heading_Penalty": -0.05,
+    "sum_Living_Penalty": -1.0,
+    "sum_No_Progress_Penalty": -1.0,
+    "sum_Backward_Penalty": -1.0,
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -83,7 +92,12 @@ def parse_args() -> argparse.Namespace:
 
 def find_log_file(prefix: str, kind: str) -> Path:
     matches = sorted(Path.cwd().glob(f"{prefix}{kind}*"))
-    matches = [path for path in matches if path.is_file()]
+    valid_suffixes = {"", ".csv", ".txt"}
+    matches = [
+        path
+        for path in matches
+        if path.is_file() and path.suffix.lower() in valid_suffixes
+    ]
     if not matches:
         raise FileNotFoundError(f"No file found matching {prefix}{kind}*")
     if len(matches) > 1:
@@ -492,15 +506,34 @@ def plot_reward_components(summary: pd.DataFrame, output_dir: Path) -> Path:
     for col, label, color in labels_and_colors:
         if col not in component_means:
             continue
-        values = component_means[col].to_numpy(dtype=float)
-        if col != "sum_Progress_Reward":
-            values = -values
-        bottom = positive_bottom if np.all(values >= 0) else negative_bottom
-        ax.bar(x, values, bottom=bottom, color=color, alpha=0.78, label=label)
-        if np.all(values >= 0):
-            positive_bottom += values
-        else:
-            negative_bottom += values
+        values = (
+            component_means[col].to_numpy(dtype=float)
+            * REWARD_COMPONENT_SCALES.get(col, 1.0)
+        )
+        positive_mask = values >= 0
+        negative_mask = ~positive_mask
+
+        if np.any(positive_mask):
+            ax.bar(
+                x[positive_mask],
+                values[positive_mask],
+                bottom=positive_bottom[positive_mask],
+                color=color,
+                alpha=0.78,
+                label=label,
+            )
+            positive_bottom[positive_mask] += values[positive_mask]
+
+        if np.any(negative_mask):
+            ax.bar(
+                x[negative_mask],
+                values[negative_mask],
+                bottom=negative_bottom[negative_mask],
+                color=color,
+                alpha=0.78,
+                label="_nolegend_",
+            )
+            negative_bottom[negative_mask] += values[negative_mask]
 
     net = (
         summary.groupby(["terrain_block", "terrain"], as_index=False)[
@@ -518,8 +551,8 @@ def plot_reward_components(summary: pd.DataFrame, output_dir: Path) -> Path:
         rotation=25,
         ha="right",
     )
-    ax.set_ylabel("Mean episode contribution")
-    ax.set_title("Mean reward components by terrain block")
+    ax.set_ylabel("Mean episode contribution to reward")
+    ax.set_title("Mean reward components by terrain block (scaled)")
     ax.legend(frameon=False, ncol=2)
     finish_axis(ax, xlabel=None)
     fig.tight_layout()
