@@ -30,6 +30,7 @@ class CoadaptReplayBuffer(ReplayBuffer):
                 1.0,
             )
         )
+        self._active_terrain_ids = None
 
         # default mode 
         self._mode = "species"
@@ -96,8 +97,17 @@ class CoadaptReplayBuffer(ReplayBuffer):
         # restore env manually
         buffer.env = env
         buffer._env = env
+        if not hasattr(buffer, '_active_terrain_ids'):
+            buffer._active_terrain_ids = None
         print(f"replay buffer loaded from {filepath}")
         return buffer
+
+    def set_active_terrain_ids(self, terrain_ids):
+        if terrain_ids is None:
+            self._active_terrain_ids = None
+            return
+        terrain_ids = list(terrain_ids)
+        self._active_terrain_ids = set(map(int, terrain_ids)) if terrain_ids else None
 
 
     def add_sample(self, observation, action, reward, terminal,
@@ -137,9 +147,25 @@ class CoadaptReplayBuffer(ReplayBuffer):
             return buffer.random_batch(batch_size)
 
         terrain_ids = buffer._env_infos['terrain_id'][:buffer._size].reshape(-1).astype(int)
-        valid_terrain_ids = sorted([tid for tid in np.unique(terrain_ids) if tid >= 0])
+        active_mask = np.ones(buffer._size, dtype=bool)
+        if self._active_terrain_ids is not None:
+            active_values = np.asarray(sorted(self._active_terrain_ids), dtype=int)
+            active_mask = np.isin(terrain_ids, active_values)
+
+        eligible_indices = np.where(active_mask)[0]
+        if len(eligible_indices) == 0:
+            raise ValueError(
+                "No replay samples are available for the active terrain filter."
+            )
+
+        valid_terrain_ids = sorted([
+            tid for tid in np.unique(terrain_ids[eligible_indices])
+            if tid >= 0
+        ])
         if not valid_terrain_ids:
-            return buffer.random_batch(batch_size)
+            replace = len(eligible_indices) < batch_size
+            indices = np.random.choice(eligible_indices, size=batch_size, replace=replace)
+            return self._random_batch_from_indices(buffer, indices)
 
         n_terrains = len(valid_terrain_ids)
         base = batch_size // n_terrains
@@ -150,7 +176,7 @@ class CoadaptReplayBuffer(ReplayBuffer):
             n_take = base + (1 if i < remainder else 0)
             if n_take == 0:
                 continue
-            candidate = np.where(terrain_ids == terrain_id)[0]
+            candidate = np.where(active_mask & (terrain_ids == terrain_id))[0]
             if len(candidate) == 0:
                 continue
             replace = len(candidate) < n_take
@@ -158,12 +184,15 @@ class CoadaptReplayBuffer(ReplayBuffer):
             sampled_indices.append(sampled)
 
         if not sampled_indices:
-            return buffer.random_batch(batch_size)
+            replace = len(eligible_indices) < batch_size
+            indices = np.random.choice(eligible_indices, size=batch_size, replace=replace)
+            return self._random_batch_from_indices(buffer, indices)
 
         indices = np.concatenate(sampled_indices, axis=0)
         if len(indices) < batch_size:
-            # Top up from all data to preserve requested batch size.
-            extra = np.random.choice(buffer._size, size=batch_size - len(indices), replace=buffer._size < (batch_size - len(indices)))
+            # Top up from active terrains only to preserve the requested batch size.
+            extra_needed = batch_size - len(indices)
+            extra = np.random.choice(eligible_indices, size=extra_needed, replace=len(eligible_indices) < extra_needed)
             indices = np.concatenate([indices, extra], axis=0)
 
         np.random.shuffle(indices)

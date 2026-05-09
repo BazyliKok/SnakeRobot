@@ -53,28 +53,39 @@ class SnakeEnv(gymnasium.Env):
     '''
        Robot has 7 motors and 8 snake segments
        Action Space: 7
-       Observation Space: 4 normalized motion features + 7 normalized motors + 24 one-hot module-scale features
+       Observation Space: 4 normalized motion features + 7 normalized motors + 6 continuous scale-design features
     '''
 
     # setting up design framework
-    # Design vector encodes the design type used on each interchangeable contact plate.
-    # Valid design IDs are the physical Design 2, Design 5, and Design 7 variants.
-    design_parameter_options = [2, 5, 7]
+    # Continuous scale-parameter design. The physical layout is fixed to an
+    # alternating A/B pattern: A on modules 1,3,5,7 and B on modules 2,4,6,8.
+    scale_design_schema_version = 3
+    scale_module_length = 60.0
+    scales_per_module = 7
+    scale_pitch = scale_module_length / scales_per_module
+    design_parameter_names = [
+        "A_width_ratio",
+        "A_attack_angle_deg",
+        "B_width_ratio",
+        "B_attack_angle_deg",
+    ]
+    design_parameter_bounds = [
+        (0.45, 0.90),
+        (0.0, 15.0),
+        (0.45, 0.90),
+        (0.0, 15.0),
+    ]
+    design_feature_names = [
+        "A_width_norm",
+        "A_attack_angle_norm",
+        "B_width_norm",
+        "B_attack_angle_norm",
+        "Delta_width_norm",
+        "Delta_attack_angle_norm",
+    ]
     design_slot_count = 8
-    current_design = [2] * design_slot_count
-    design_types = {
-        2: 'DESIGN_2',
-        5: 'DESIGN_5',
-        7: 'DESIGN_7',
-    }
-    # Old checkpoints in results/ were trained with seven scalar plate-code inputs
-    # instead of the one-hot physical design IDs used now. These values project a
-    # current design ID back into that legacy feature space when warm-starting.
-    legacy_design_feature_values = {
-        2: 2.7,
-        5: 0.6,
-        7: 1.8,
-    }
+    module_group_pattern = ["A", "B", "A", "B", "A", "B", "A", "B"]
+    current_design = [0.63, 0.0, 0.63, 0.0]
     terrains = ['artificial_grass', 'cardboard', 'carpet', 'foam']
     # Terrain IDs are saved in replay buffers; keep existing IDs stable.
     terrain_name_to_id = {
@@ -91,30 +102,23 @@ class SnakeEnv(gymnasium.Env):
     }
     current_terrain = terrains[0]
 
-    # Bounds are continuous for PSO, but values are snapped to the valid design IDs above.
-    design_parameter_bounds = [
-        (min(design_parameter_options), max(design_parameter_options))
-    ] * design_slot_count
-
-    _design_id_to_index = dict(
-        zip(design_parameter_options, range(len(design_parameter_options)))
-    )
-
-    # Initial symmetric and asymmetric design-distribution seeds.
-    init_design_parameters = [
-        [7, 7, 7, 7, 7, 7, 7, 7],  # symmetric: Design 7 everywhere
-        [2, 2, 2, 2, 2, 2, 2, 2],  # symmetric: Design 2 everywhere
-        [5, 5, 5, 5, 5, 5, 5, 5],  # symmetric: Design 5 everywhere
-        [2, 2, 5, 5, 5, 5, 7, 7],  # grouped modules: Design 2 front, Design 5 middle, Design 7 rear
-        [7, 7, 5, 5, 5, 5, 2, 2],  # reverse grouped
-        [2, 5, 7, 2, 5, 7, 2, 5],  # alternating, starts with Design 2
-        [7, 5, 2, 7, 5, 2, 7, 5],  # alternating, starts with Design 7
+    # Initial matched seeds for the homogeneous-vs-heterogeneous experiment.
+    homogeneous_init_design_parameters = [
+        [0.63, 0.0, 0.63, 0.0],
+        [0.63, 15.0, 0.63, 15.0],
+        [0.90, 0.0, 0.90, 0.0],
+        [0.90, 15.0, 0.90, 15.0],
     ]
+    heterogeneous_init_design_parameters = [
+        [0.63, 0.0, 0.90, 15.0],
+        [0.90, 15.0, 0.63, 0.0],
+        [0.63, 15.0, 0.90, 0.0],
+        [0.90, 0.0, 0.63, 15.0],
+    ]
+    init_design_parameters = heterogeneous_init_design_parameters
 
     design_slot_names = [f'Module{i + 1}' for i in range(design_slot_count)]
-    config_numpy = np.eye(len(design_parameter_options), dtype=np.float32)[
-        list(map(_design_id_to_index.__getitem__, current_design))
-    ].reshape(-1)
+    config_numpy = np.asarray([-0.2, -1.0, -0.2, -1.0, 0.0, 0.0], dtype=np.float32)
     base_feature_dim = 11
     design_dims = list(range(base_feature_dim, base_feature_dim + len(config_numpy)))
     print('design dimensions!', design_dims)
@@ -827,51 +831,52 @@ class SnakeEnv(gymnasium.Env):
 
     @staticmethod
     def set_new_design(design):
-        snapped = SnakeEnv._coerce_design_vector(design)
-        SnakeEnv.current_design = snapped
-        SnakeEnv.config_numpy = SnakeEnv.encode_design_vector(snapped)
-
-    @staticmethod
-    def _coerce_design_id(value):
-        options = np.asarray(SnakeEnv.design_parameter_options, dtype=np.float32)
-        try:
-            numeric_value = float(np.asarray(value).reshape(-1)[0])
-        except (TypeError, ValueError, IndexError):
-            return int(options[0])
-        if not np.isfinite(numeric_value):
-            return int(options[0])
-        return int(options[np.argmin(np.abs(options - numeric_value))])
+        coerced = SnakeEnv._coerce_design_vector(design)
+        SnakeEnv.current_design = coerced
+        SnakeEnv.config_numpy = SnakeEnv.encode_design_vector(coerced)
 
     @staticmethod
     def _coerce_design_vector(design):
-        slot_count = len(SnakeEnv.design_parameter_bounds)
-        values = np.asarray(design).reshape(-1).tolist()
-        values = values[:slot_count]
-        if len(values) < slot_count:
-            values.extend(SnakeEnv.current_design[len(values):slot_count])
-        return [SnakeEnv._coerce_design_id(value) for value in values]
+        bounds = SnakeEnv.design_parameter_bounds
+        default = list(SnakeEnv.current_design)
+        try:
+            values = np.asarray(design, dtype=float).reshape(-1).tolist()
+        except (TypeError, ValueError):
+            values = []
+        values = values[:len(bounds)]
+        if len(values) < len(bounds):
+            values.extend(default[len(values):len(bounds)])
+
+        coerced = []
+        for value, (lower, upper) in zip(values, bounds):
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                numeric_value = float(lower)
+            if not np.isfinite(numeric_value):
+                numeric_value = float(lower)
+            coerced.append(float(np.clip(numeric_value, lower, upper)))
+        return coerced
 
     @staticmethod
     def encode_design_vector(design):
-        design_ids = SnakeEnv._coerce_design_vector(design)
-        encoded = np.zeros(len(design_ids) * len(SnakeEnv.design_parameter_options), dtype=np.float32)
-        for idx, design_id in enumerate(design_ids):
-            encoded_idx = SnakeEnv._design_id_to_index[design_id]
-            encoded[idx * len(SnakeEnv.design_parameter_options) + encoded_idx] = 1.0
-        return encoded
+        design = SnakeEnv._coerce_design_vector(design)
+        bounds = SnakeEnv.design_parameter_bounds
+        encoded = []
+        for value, (lower, upper) in zip(design, bounds):
+            span = max(float(upper) - float(lower), 1e-6)
+            encoded.append(float(np.clip(2.0 * ((value - lower) / span) - 1.0, -1.0, 1.0)))
+
+        width_span = max(bounds[0][1] - bounds[0][0], 1e-6)
+        attack_angle_span = max(bounds[1][1] - bounds[1][0], 1e-6)
+        delta_width_norm = float(np.clip((design[0] - design[2]) / width_span, -1.0, 1.0))
+        delta_attack_angle_norm = float(np.clip((design[1] - design[3]) / attack_angle_span, -1.0, 1.0))
+        encoded.extend([delta_width_norm, delta_attack_angle_norm])
+        return np.asarray(encoded, dtype=np.float32)
 
     @staticmethod
     def get_design_feature_labels():
-        labels = []
-        design_ids = list(SnakeEnv.design_parameter_options)
-        for slot_idx in range(len(SnakeEnv.current_design)):
-            if slot_idx < len(SnakeEnv.design_slot_names):
-                slot_name = SnakeEnv.design_slot_names[slot_idx]
-            else:
-                slot_name = f'Segment{slot_idx + 1}'
-            for design_id in design_ids:
-                labels.append(f'{slot_name}_{SnakeEnv.design_types[design_id]}')
-        return labels
+        return list(SnakeEnv.design_feature_names)
 
     @staticmethod
     def get_observation_feature_labels():
@@ -903,15 +908,102 @@ class SnakeEnv(gymnasium.Env):
       
     @staticmethod 
     def get_random_design():
-        optimized_params = np.random.choice(
-            SnakeEnv.design_parameter_options,
-            size=len(SnakeEnv.design_parameter_bounds),
-        )
-        return optimized_params
+        return [
+            float(np.random.uniform(lower, upper))
+            for lower, upper in SnakeEnv.design_parameter_bounds
+        ]
       
     @staticmethod
     def get_current_design():
         return copy.copy(SnakeEnv.current_design)
+
+    @staticmethod
+    def get_default_design():
+        return SnakeEnv._coerce_design_vector([0.63, 0.0, 0.63, 0.0])
+
+    @staticmethod
+    def get_init_design_parameters(design_mode='heterogeneous'):
+        design_mode = str(design_mode).strip().lower()
+        if design_mode == 'homogeneous':
+            return [
+                SnakeEnv._coerce_design_vector(design)
+                for design in SnakeEnv.homogeneous_init_design_parameters
+            ]
+        if design_mode == 'heterogeneous':
+            return [
+                SnakeEnv._coerce_design_vector(design)
+                for design in SnakeEnv.heterogeneous_init_design_parameters
+            ]
+        raise ValueError("SNAKE_SCALE_DESIGN_MODE must be 'homogeneous' or 'heterogeneous'.")
+
+    @staticmethod
+    def get_optimization_bounds(design_mode='heterogeneous'):
+        design_mode = str(design_mode).strip().lower()
+        if design_mode == 'homogeneous':
+            return [SnakeEnv.design_parameter_bounds[0], SnakeEnv.design_parameter_bounds[1]]
+        if design_mode == 'heterogeneous':
+            return list(SnakeEnv.design_parameter_bounds)
+        raise ValueError("SNAKE_SCALE_DESIGN_MODE must be 'homogeneous' or 'heterogeneous'.")
+
+    @staticmethod
+    def expand_optimization_design(design, design_mode='heterogeneous'):
+        design_mode = str(design_mode).strip().lower()
+        try:
+            values = np.asarray(design, dtype=float).reshape(-1).tolist()
+        except (TypeError, ValueError):
+            values = []
+        if design_mode == 'homogeneous':
+            if len(values) < 2:
+                default = SnakeEnv.get_default_design()
+                values.extend([default[0], default[1]][len(values):])
+            return SnakeEnv._coerce_design_vector([values[0], values[1], values[0], values[1]])
+        if design_mode == 'heterogeneous':
+            return SnakeEnv._coerce_design_vector(values)
+        raise ValueError("SNAKE_SCALE_DESIGN_MODE must be 'homogeneous' or 'heterogeneous'.")
+
+    @staticmethod
+    def actual_width_from_ratio(width_ratio):
+        return float(width_ratio) * float(SnakeEnv.scale_pitch)
+
+    @staticmethod
+    def design_summary(design=None):
+        design = SnakeEnv._coerce_design_vector(SnakeEnv.current_design if design is None else design)
+        return {
+            'A_Width_Ratio': float(design[0]),
+            'A_Attack_Angle_Deg': float(design[1]),
+            'A_Actual_Width': SnakeEnv.actual_width_from_ratio(design[0]),
+            'B_Width_Ratio': float(design[2]),
+            'B_Attack_Angle_Deg': float(design[3]),
+            'B_Actual_Width': SnakeEnv.actual_width_from_ratio(design[2]),
+            'Width_Delta': float(design[0] - design[2]),
+            'Attack_Angle_Delta': float(design[1] - design[3]),
+        }
+
+    @staticmethod
+    def expand_design_to_modules(design=None):
+        design = SnakeEnv._coerce_design_vector(SnakeEnv.current_design if design is None else design)
+        summary = SnakeEnv.design_summary(design)
+        modules = []
+        for idx, group in enumerate(SnakeEnv.module_group_pattern):
+            prefix = 'A' if group == 'A' else 'B'
+            modules.append({
+                'module': idx + 1,
+                'group': group,
+                'width_ratio': summary[f'{prefix}_Width_Ratio'],
+                'actual_width': summary[f'{prefix}_Actual_Width'],
+                'attack_angle_deg': summary[f'{prefix}_Attack_Angle_Deg'],
+            })
+        return modules
+
+    @staticmethod
+    def format_design_for_terminal(design=None):
+        summary = SnakeEnv.design_summary(SnakeEnv.current_design if design is None else design)
+        return (
+            "Scale A: width_ratio={A_Width_Ratio:.3f}, actual_width={A_Actual_Width:.3f}, "
+            "attack_angle={A_Attack_Angle_Deg:.2f} deg | "
+            "Scale B: width_ratio={B_Width_Ratio:.3f}, actual_width={B_Actual_Width:.3f}, "
+            "attack_angle={B_Attack_Angle_Deg:.2f} deg"
+        ).format(**summary)
   
     @staticmethod
     def get_design_dimensions():
@@ -919,5 +1011,5 @@ class SnakeEnv(gymnasium.Env):
 
     @staticmethod
     def get_number_of_init_designs():
-        print('NUM DESIGNS', len(SnakeEnv.init_design_parameters))
-        return len(SnakeEnv.init_design_parameters)
+        print('NUM DESIGNS', len(SnakeEnv.get_init_design_parameters()))
+        return len(SnakeEnv.get_init_design_parameters())

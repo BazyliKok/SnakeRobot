@@ -15,6 +15,10 @@ def _fmt_pos(vec):
     return f"({vec[0]: .4f}, {vec[1]: .4f}, {vec[2]: .4f})"
 
 
+def test_fmt_pos_formats_three_coordinates():
+    assert _fmt_pos((1.0, -2.5, 0.125)) == "( 1.0000, -2.5000,  0.1250)"
+
+
 def main():
     parser = argparse.ArgumentParser(description="List visible OptiTrack rigid bodies")
     parser.add_argument("--server", default=os.getenv("OPTITRACK_SERVER_IP","10.0.10.4"))

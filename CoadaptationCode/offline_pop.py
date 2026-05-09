@@ -155,7 +155,7 @@ for path in REPLAY_PATHS:
 if loaded_samples == 0:
     raise RuntimeError(
         "No compatible replay samples were loaded. Use replay generated with the current "
-        "8-module observation/action spaces before running offline_pop.py."
+        "scale-parameter observation/action spaces before running offline_pop.py."
     )
 
 trainer = SoftActorCriticCoadapt(

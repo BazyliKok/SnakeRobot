@@ -50,16 +50,27 @@ class Train():
         self.policy_action_warmup_episodes = 2  # full-random episodes before policy/random mixing starts
         self.training_update_warmup_episodes = 1  # collected episodes before SAC updates start
         self.design_cylces = 20 # total number of design cycles
-        self.terrain_sequence = list(SnakeEnv.terrains)
-        self.training_terrain_block_size = 8
+        self.design_mode = os.getenv('SNAKE_SCALE_DESIGN_MODE', 'heterogeneous').strip().lower()
+        self.initial_designs = SnakeEnv.get_init_design_parameters(self.design_mode)
+        self.terrain_sequence = self._parse_active_terrains()
+        self.training_terrain_block_size = max(
+            1,
+            int(os.getenv('SNAKE_EPISODES_PER_TERRAIN', '50')),
+        )
         self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size # number of episodes per design
-        self.results_tag = 'mixed_terrain'
+        default_results_tag = f"scale_ab_{'_'.join(self.terrain_sequence)}"
+        self.results_tag = os.getenv('SNAKE_RESULTS_TAG', default_results_tag)
         self.legacy_results_tags = [self.results_tag] + self.terrain_sequence + ['carton']
         resuming_from_checkpoint = self._read_bool_env('SNAKE_RESUME_CHECKPOINT', default=False)
         self.use_legacy_policy_warm_start = self._read_bool_env(
             'SNAKE_USE_LEGACY_POLICY',
-            default=not resuming_from_checkpoint,
+            default=False,
         )
+        if self.use_legacy_policy_warm_start:
+            raise RuntimeError(
+                "Legacy warm-start is disabled for continuous scale-parameter training. "
+                "Start fresh or resume a checkpoint created with the scale-parameter schema."
+            )
         self.legacy_results_dir = os.getenv(
             'SNAKE_LEGACY_RESULTS_DIR',
             os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results'),
@@ -72,6 +83,7 @@ class Train():
         self.training_terrain_block_order = []
         self.training_episode_schedule = []
         self.training_schedule_design_counter = None
+        self.randomize_terrain_order = self._read_bool_env('SNAKE_RANDOMIZE_TERRAIN_ORDER', default=False)
         self.current_training_terrain = None
         self.current_training_terrain_id = -1
         self.current_training_block_index = -1
@@ -83,12 +95,11 @@ class Train():
         self.current_design_optimization_seed = None
         self._last_individual_reset_key = None
 
-        # Keep some exploration for fresh runs. For legacy warm starts, rely on
-        # the SAC policy's own stochasticity and avoid extra hand-added jitter
-        # so the old gait is preserved as much as possible.
-        default_action_noise_std = '0.0' if self.use_legacy_policy_warm_start else '0.10'
-        default_repeat_action_eps = '0.0' if self.use_legacy_policy_warm_start else '0.02'
-        default_repeat_action_perturb_std = '0.0' if self.use_legacy_policy_warm_start else '0.08'
+        # Keep some exploration for fresh runs. The continuous scale-parameter
+        # experiment intentionally starts from scratch by default.
+        default_action_noise_std = '0.10'
+        default_repeat_action_eps = '0.02'
+        default_repeat_action_perturb_std = '0.08'
         self.action_noise_std = max(
             0.0,
             float(os.getenv('SNAKE_ACTION_NOISE_STD', default_action_noise_std)),
@@ -104,10 +115,10 @@ class Train():
         self.random_action_prob_start = 0.3
         self.random_action_prob_decay = 0.02
         self.random_action_prob_min = 0.1
-        default_pop_train_start_design = '2' if self.use_legacy_policy_warm_start else '0'
-        default_terrain_prefill_episodes = '1' if self.use_legacy_policy_warm_start else '0'
-        default_policy_warmup_episodes = '0' if self.use_legacy_policy_warm_start else str(self.policy_action_warmup_episodes)
-        default_update_warmup_episodes = '0' if self.use_legacy_policy_warm_start else str(self.training_update_warmup_episodes)
+        default_pop_train_start_design = '0'
+        default_terrain_prefill_episodes = '0'
+        default_policy_warmup_episodes = str(self.policy_action_warmup_episodes)
+        default_update_warmup_episodes = str(self.training_update_warmup_episodes)
         self.population_training_start_design = int(
             os.getenv('SNAKE_POP_TRAIN_START_DESIGN', default_pop_train_start_design)
         )
@@ -131,11 +142,6 @@ class Train():
             0.0,
             float(os.getenv('SNAKE_MOTOR_FAULT_STEP_RETRY_DELAY_S', '1.0')),
         )
-        if self.use_legacy_policy_warm_start:
-            self.random_action_prob_start = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_START', '0.0'))
-            self.random_action_prob_decay = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_DECAY', '0.0'))
-            self.random_action_prob_min = float(os.getenv('SNAKE_RANDOM_ACTION_PROB_MIN', '0.0'))
-
         self.episodeCumulativeRewards = []  # Stores cumulative rewards per episode
         self.cumulativeRewards = []  # Stores cumulative rewards per step
 
@@ -143,7 +149,7 @@ class Train():
 
         self.eachEpisodeCumuRewards = []
 
-        self.num_init_designs = len(SnakeEnv.init_design_parameters) # number of initial design cycles
+        self.num_init_designs = len(self.initial_designs) # number of initial design cycles
         self.seed = int(os.getenv('SNAKE_EXPERIMENT_SEED', '12345'))
         self.eval_episodes_per_terrain = max(0, int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '0')))
         self.training_score_last_episodes_per_terrain = max(
@@ -158,6 +164,7 @@ class Train():
             env= self.env,
             env_info_sizes=None
         )
+        self._refresh_active_terrain_filter()
         self._seed_global_rngs('initialization')
 
         # set up RL algorithm
@@ -181,6 +188,37 @@ class Train():
         if env_value is None:
             return default
         return env_value.strip().lower() in ('1', 'true', 'yes', 'on')
+
+    def _parse_active_terrains(self, raw_value=None):
+        raw_value = os.getenv('SNAKE_ACTIVE_TERRAINS', 'carpet,foam') if raw_value is None else raw_value
+        terrain_sequence = [terrain.strip() for terrain in str(raw_value).split(',') if terrain.strip()]
+        if not terrain_sequence:
+            raise ValueError(
+                "SNAKE_ACTIVE_TERRAINS must name at least one terrain, "
+                "for example 'carpet,foam'."
+            )
+
+        invalid_terrains = [terrain for terrain in terrain_sequence if terrain not in SnakeEnv.terrains]
+        if invalid_terrains:
+            raise ValueError(
+                f"Unknown terrain(s) in SNAKE_ACTIVE_TERRAINS: {invalid_terrains}. "
+                f"Use one or more of {SnakeEnv.terrains}."
+            )
+        return terrain_sequence
+
+    def _active_terrain_ids(self):
+        return [self.terrain_name_to_id[terrain] for terrain in self.terrain_sequence]
+
+    def _refresh_active_terrain_filter(self):
+        if hasattr(self, 'replay') and self.replay is not None:
+            self.replay.set_active_terrain_ids(self._active_terrain_ids())
+
+    def _scale_design_summary_fields(self, design=None):
+        design = SnakeEnv._coerce_design_vector(SnakeEnv.get_current_design() if design is None else design)
+        summary = SnakeEnv.design_summary(design)
+        summary['Scale_Design_Mode'] = self.design_mode
+        summary['Design_Config'] = '|'.join(f'{value:.6g}' for value in design)
+        return summary
 
     def _action_dim(self):
         action_shape = getattr(self.env.action_space, "shape", None)
@@ -307,20 +345,30 @@ class Train():
 
     def _print_design_installation_prompt(self, design):
         design = SnakeEnv._coerce_design_vector(design)
-        module_assignments = [
-            f'{slot_name}=Design{int(design_id)}'
-            for slot_name, design_id in zip(SnakeEnv.design_slot_names, design)
-        ]
+        summary = SnakeEnv.design_summary(design)
         print('')
         print('=== INSTALL SCALE CONFIGURATION ===')
-        print(f'Design cycle {self.design_counter}: ' + ', '.join(module_assignments))
-        print('Install this module-scale layout on the robot before continuing this design.')
+        print(f'Design cycle {self.design_counter}')
+        print(f'Mode: {self.design_mode}')
+        print(
+            f"Scale A: width_ratio={summary['A_Width_Ratio']:.3f}, "
+            f"actual_width={summary['A_Actual_Width']:.3f}, "
+            f"attack_angle_deg={summary['A_Attack_Angle_Deg']:.2f}"
+        )
+        print(
+            f"Scale B: width_ratio={summary['B_Width_Ratio']:.3f}, "
+            f"actual_width={summary['B_Actual_Width']:.3f}, "
+            f"attack_angle_deg={summary['B_Attack_Angle_Deg']:.2f}"
+        )
+        print('Modules 1,3,5,7: Scale A')
+        print('Modules 2,4,6,8: Scale B')
+        print(f"Active terrains: {', '.join(self.terrain_sequence)}")
+        print(f"Episodes per terrain: {self.training_terrain_block_size}")
         print('===================================')
         print('')
 
     def _format_design_for_terminal(self, design):
-        design = SnakeEnv._coerce_design_vector(design)
-        return ', '.join(f'Design {int(design_id)}' for design_id in design)
+        return SnakeEnv.format_design_for_terminal(design)
 
     def _active_replay_indices(self, buffer):
         active_size = int(buffer._size)
@@ -433,7 +481,6 @@ class Train():
             'Training_Schedule_Seed': int(self.current_schedule_seed) if self.current_schedule_seed is not None else None,
             'Design_Counter': int(self.design_counter),
             'Episode_Counter': int(self.episode_counter),
-            'Design_Config': '|'.join(str(int(value)) for value in current_design),
             'Training_Episodes_Per_Design': int(self.episode_iterations),
             'Training_Terrain_Block_Size': int(self.training_terrain_block_size),
             'Training_Terrain_Block_Order': '|'.join(self.training_terrain_block_order),
@@ -453,12 +500,7 @@ class Train():
             'Robustness_Lambda': float(self.eval_robustness_lambda),
             'Robustness_Score': robustness_score,
         }
-        for slot_idx, design_id in enumerate(current_design):
-            if slot_idx < len(SnakeEnv.design_slot_names):
-                slot_name = SnakeEnv.design_slot_names[slot_idx]
-            else:
-                slot_name = f'Plate{slot_idx + 1}'
-            summary_row[f'Design_{slot_name}'] = int(design_id)
+        summary_row.update(self._scale_design_summary_fields(current_design))
 
         for terrain in self.terrain_sequence:
             returns = selected_returns_by_terrain[terrain]
@@ -518,8 +560,11 @@ class Train():
 
     def _build_randomized_training_schedule(self):
         self.current_schedule_seed = self._stable_seed('terrain_schedule', self.design_counter)
-        schedule_rng = np.random.default_rng(self.current_schedule_seed)
-        terrain_block_order = list(schedule_rng.permutation(self.terrain_sequence))
+        if self.randomize_terrain_order:
+            schedule_rng = np.random.default_rng(self.current_schedule_seed)
+            terrain_block_order = list(schedule_rng.permutation(self.terrain_sequence))
+        else:
+            terrain_block_order = list(self.terrain_sequence)
         episode_schedule = []
         for terrain in terrain_block_order:
             episode_schedule.extend([terrain] * self.training_terrain_block_size)
@@ -532,7 +577,10 @@ class Train():
             return False
         if len(self.training_episode_schedule) != expected_episodes:
             return False
-        if Counter(self.training_terrain_block_order) != Counter(self.terrain_sequence):
+        if self.randomize_terrain_order:
+            if Counter(self.training_terrain_block_order) != Counter(self.terrain_sequence):
+                return False
+        elif list(self.training_terrain_block_order) != list(self.terrain_sequence):
             return False
 
         for block_idx, terrain in enumerate(self.training_terrain_block_order):
@@ -552,8 +600,8 @@ class Train():
 
         if self.episode_counter not in (None, 0):
             print(
-                'No saved mixed-terrain schedule found for this design; '
-                'generating a new randomized terrain block order for the remaining episodes.'
+                'No saved terrain schedule found for this design; '
+                'generating a new terrain block order for the remaining episodes.'
             )
 
         self.training_terrain_block_order, self.training_episode_schedule = self._build_randomized_training_schedule()
@@ -588,6 +636,13 @@ class Train():
             if os.path.exists(candidate):
                 return candidate
 
+        if os.path.isdir(base_path):
+            prefix = f'{stem}_'
+            suffix = f'.{extension}'
+            for filename in os.listdir(base_path):
+                if filename.startswith(prefix) and filename.endswith(suffix):
+                    return os.path.join(base_path, filename)
+
         return tagged_candidates[0]
 
     def _load_trusted_checkpoint(self, path, **kwargs):
@@ -598,197 +653,11 @@ class Train():
                 raise
             return torch.load(path, **kwargs)
 
-    def _legacy_checkpoint_path(self, checkpoint_kind):
-        return os.path.join(
-            self.legacy_results_dir,
-            f'{checkpoint_kind}_{self.legacy_checkpoint_prefix}.pt',
-        )
-
-    def _legacy_state_dict(self, checkpoint):
-        if hasattr(checkpoint, 'state_dict'):
-            return checkpoint.state_dict()
-        if isinstance(checkpoint, dict):
-            if all(torch.is_tensor(value) for value in checkpoint.values()):
-                return checkpoint
-        raise TypeError(f'Unsupported legacy checkpoint type: {type(checkpoint)}')
-
-    def _legacy_input_projection(self, include_actions):
-        legacy_obs_dim = 17  # old layout: 4 motion + 6 motors + 7 scalar plate IDs
-        legacy_action_dim = 6
-        target_obs_dim = int(np.prod(self.env.observation_space.shape))
-        target_action_dim = int(np.prod(self.env.action_space.shape))
-
-        obs_mapping = [None] * target_obs_dim
-
-        # Motion features keep the same first four slots.
-        for idx in range(min(4, target_obs_dim, legacy_obs_dim)):
-            obs_mapping[idx] = (idx, 1.0)
-
-        # The old robot policy acted on six motors. Keep those learned couplings
-        # for motors 1-6; motor 7 remains at the current random initialization.
-        for motor_idx in range(6):
-            target_idx = 4 + motor_idx
-            source_idx = 4 + motor_idx
-            if target_idx < target_obs_dim and source_idx < legacy_obs_dim:
-                obs_mapping[target_idx] = (source_idx, 1.0)
-
-        # Convert current one-hot scale IDs back into the scalar plate-code
-        # features used by the previous person's checkpoints.
-        options = list(SnakeEnv.design_parameter_options)
-        legacy_design_values = dict(SnakeEnv.legacy_design_feature_values)
-        target_design_start = SnakeEnv.base_feature_dim
-        legacy_design_start = 10
-        for slot_idx in range(len(SnakeEnv.design_parameter_bounds)):
-            source_idx = legacy_design_start + slot_idx
-            if source_idx >= legacy_obs_dim:
-                break
-            for option_idx, design_id in enumerate(options):
-                target_idx = target_design_start + slot_idx * len(options) + option_idx
-                if target_idx < target_obs_dim:
-                    obs_mapping[target_idx] = (
-                        source_idx,
-                        float(legacy_design_values.get(int(design_id), float(design_id))),
-                    )
-
-        if not include_actions:
-            return obs_mapping
-
-        mapping = obs_mapping + [None] * target_action_dim
-        for action_idx in range(legacy_action_dim):
-            target_idx = target_obs_dim + action_idx
-            source_idx = legacy_obs_dim + action_idx
-            if target_idx < len(mapping):
-                mapping[target_idx] = (source_idx, 1.0)
-        return mapping
-
-    def _project_legacy_input_weight(self, source_tensor, target_tensor, include_actions):
-        projected = target_tensor.clone()
-        mapping = self._legacy_input_projection(include_actions=include_actions)
-        row_count = min(projected.shape[0], source_tensor.shape[0])
-
-        for target_col, source_spec in enumerate(mapping):
-            if target_col >= projected.shape[1] or source_spec is None:
-                continue
-            source_col, scale = source_spec
-            if source_col < source_tensor.shape[1]:
-                projected[:row_count, target_col] = source_tensor[:row_count, source_col] * scale
-
-        return projected
-
-    def _copy_legacy_tensor(self, name, source_tensor, target_tensor):
-        source_tensor = source_tensor.detach().to(
-            device=target_tensor.device,
-            dtype=target_tensor.dtype,
-        )
-
-        if tuple(source_tensor.shape) == tuple(target_tensor.shape):
-            return source_tensor.clone(), 'full'
-
-        if source_tensor.ndim == 2 and target_tensor.ndim == 2:
-            source_input_dim = source_tensor.shape[1]
-            target_input_dim = target_tensor.shape[1]
-            target_obs_dim = int(np.prod(self.env.observation_space.shape))
-            target_action_dim = int(np.prod(self.env.action_space.shape))
-
-            if source_input_dim == 17 and target_input_dim == target_obs_dim:
-                return self._project_legacy_input_weight(
-                    source_tensor,
-                    target_tensor,
-                    include_actions=False,
-                ), 'projected_obs'
-
-            if source_input_dim == 23 and target_input_dim == target_obs_dim + target_action_dim:
-                return self._project_legacy_input_weight(
-                    source_tensor,
-                    target_tensor,
-                    include_actions=True,
-                ), 'projected_obs_action'
-
-        if (
-            source_tensor.ndim == target_tensor.ndim
-            and source_tensor.ndim in (1, 2)
-            and source_tensor.shape[0] == 6
-            and target_tensor.shape[0] == 7
-        ):
-            copied = target_tensor.clone()
-            copied[:6] = source_tensor[:6]
-            copied[6:] = source_tensor[-1:].expand_as(copied[6:])
-            return copied, 'partial_replicated_motor7'
-
-        if source_tensor.ndim == target_tensor.ndim:
-            copied = target_tensor.clone()
-            slices = tuple(
-                slice(0, min(source_size, target_size))
-                for source_size, target_size in zip(source_tensor.shape, target_tensor.shape)
-            )
-            copied[slices] = source_tensor[slices]
-            return copied, 'partial'
-
-        return target_tensor.clone(), 'skipped'
-
-    def _transfer_legacy_module(self, target_module, checkpoint_path):
-        checkpoint = self._load_trusted_checkpoint(
-            checkpoint_path,
-            map_location=torch.device('cpu'),
-        )
-        source_state = self._legacy_state_dict(checkpoint)
-        target_state = target_module.state_dict()
-        updated_state = {}
-        transfer_counts = Counter()
-
-        for name, target_tensor in target_state.items():
-            source_tensor = source_state.get(name)
-            if source_tensor is None or not torch.is_tensor(source_tensor):
-                updated_state[name] = target_tensor
-                transfer_counts['missing'] += 1
-                continue
-
-            copied_tensor, transfer_kind = self._copy_legacy_tensor(
-                name,
-                source_tensor,
-                target_tensor,
-            )
-            updated_state[name] = copied_tensor
-            transfer_counts[transfer_kind] += 1
-
-        target_module.load_state_dict(updated_state, strict=True)
-        return transfer_counts
-
     def warm_start_from_legacy_checkpoint(self):
-        network_specs = {
-            'individual': [
-                ('policy', 'ind_policy'),
-                ('qf1', 'ind_qf1'),
-                ('qf2', 'ind_qf2'),
-                ('qf1_target', 'ind_qf1_tar'),
-                ('qf2_target', 'ind_qf2_tar'),
-            ],
-            'population': [
-                ('policy', 'pop_policy'),
-                ('qf1', 'pop_qf1'),
-                ('qf2', 'pop_qf2'),
-                ('qf1_target', 'pop_qf1_tar'),
-                ('qf2_target', 'pop_qf2_tar'),
-            ],
-        }
-
-        print(f'Warm-starting from legacy checkpoint: {self.legacy_checkpoint_prefix}')
-        for group_name, specs in network_specs.items():
-            for module_name, checkpoint_kind in specs:
-                checkpoint_path = self._legacy_checkpoint_path(checkpoint_kind)
-                if not os.path.exists(checkpoint_path):
-                    raise FileNotFoundError(
-                        f"Legacy checkpoint not found: {checkpoint_path}. "
-                        "Set SNAKE_LEGACY_CHECKPOINT_PREFIX or SNAKE_LEGACY_RESULTS_DIR."
-                    )
-                transfer_counts = self._transfer_legacy_module(
-                    self.networks[group_name][module_name],
-                    checkpoint_path,
-                )
-                print(
-                    f'Loaded {checkpoint_kind} into {group_name}/{module_name}: '
-                    f'{dict(transfer_counts)}'
-                )
+        raise RuntimeError(
+            "Legacy warm-start is disabled for continuous scale-parameter training. "
+            "Start fresh or resume a checkpoint created with the scale-parameter schema."
+        )
 
     def _recover_motor_fault(self, phase, exc, disable_after_recovery=True):
         print(f"Motor fault during {phase}: {exc}")
@@ -950,7 +819,7 @@ class Train():
             try:
                 if self.design_counter >= self.num_init_designs and self.optimized_params is None:
                     self.first_train_op()
-                    break
+                    continue
 
                 if self.design_counter < self.num_init_designs:
                     design_cycle_completed = self.initial_design_loop()
@@ -1207,20 +1076,24 @@ class Train():
         self.data_design_type = 'Optimized'
 
         print(f'design counter at {self.design_counter}')
-        if self.design_counter == self.num_init_designs: # change this to mathc num init designs #SnakeEnv.get_number_of_init_designs: # if first time after init design loop
+        if self.design_counter >= self.num_init_designs: # first optimized design after init loop or resume
          
             self.current_design_optimization_seed = self._seed_global_rngs(
                 'design_opt_bootstrap',
                 self.design_counter,
                 self.episode_counter,
             )
-            self.optimized_params = [SnakeEnv.design_parameter_options[0]] * len(SnakeEnv.design_parameter_bounds)
-            # or can: self.optimized_params = SnakeEnv.get_random_design()
-          
+            self.optimized_params = SnakeEnv.get_default_design()
 
             q_network = self.rl_alg.get_q_network(self.networks['population'])
             policy_network = self.rl_alg.get_policy_network(self.networks['population'])
-            self.cost, self.optimized_params = self.do_alg.optimize_design(design=self.optimized_params, q_network=q_network, policy_network=policy_network)
+            self.cost, self.optimized_params = self.do_alg.optimize_design(
+                design=self.optimized_params,
+                q_network=q_network,
+                policy_network=policy_network,
+                active_terrains=self.terrain_sequence,
+                design_mode=self.design_mode,
+            )
             self.optimized_params = SnakeEnv._coerce_design_vector(self.optimized_params)
             print('OPTIMIZED PARAM NEW DESIGN: ', self.optimized_params)
             print('COST: ', self.cost)
@@ -1277,7 +1150,13 @@ class Train():
             )
             q_network = self.rl_alg.get_q_network(self.networks['population'])
             policy_network = self.rl_alg.get_policy_network(self.networks['population'])
-            self.cost, self.optimized_params = self.do_alg.optimize_design(design=self.optimized_params, q_network=q_network, policy_network=policy_network)
+            self.cost, self.optimized_params = self.do_alg.optimize_design(
+                design=self.optimized_params,
+                q_network=q_network,
+                policy_network=policy_network,
+                active_terrains=self.terrain_sequence,
+                design_mode=self.design_mode,
+            )
             self.optimized_params = SnakeEnv._coerce_design_vector(self.optimized_params)
             print('NEW DESIGN PARAMETERS: ',self.optimized_params)
             print('COST: ', self.cost)
@@ -1377,7 +1256,7 @@ class Train():
 
         """
         self.data_design_type = 'Initial'
-        params = SnakeEnv.init_design_parameters[self.design_counter] # choose design based on in which design cycle we are
+        params = self.initial_designs[self.design_counter] # choose design based on in which design cycle we are
 
         SnakeEnv.set_new_design(params)
         self._print_design_installation_prompt(params)
@@ -1668,7 +1547,6 @@ class Train():
             'Training_Schedule_Seed': int(self.current_schedule_seed) if self.current_schedule_seed is not None else None,
             'Design_Counter': int(self.design_counter),
             'Episode_Counter': int(self.episode_counter),
-            'Design_Config': '|'.join(str(int(value)) for value in current_design),
             'Training_Episodes_Per_Design': int(self.episode_iterations),
             'Training_Terrain_Block_Size': int(self.training_terrain_block_size),
             'Training_Terrain_Block_Order': '|'.join(self.training_terrain_block_order),
@@ -1696,12 +1574,7 @@ class Train():
             'Robustness_Lambda': float(self.eval_robustness_lambda),
             'Robustness_Score': robustness_score,
         }
-        for slot_idx, design_id in enumerate(current_design):
-            if slot_idx < len(SnakeEnv.design_slot_names):
-                slot_name = SnakeEnv.design_slot_names[slot_idx]
-            else:
-                slot_name = f'Plate{slot_idx + 1}'
-            summary_row[f'Design_{slot_name}'] = int(design_id)
+        summary_row.update(self._scale_design_summary_fields(current_design))
 
         for terrain in self.terrain_sequence:
             total_rollouts = terrain_total_rollouts[terrain]
@@ -1784,10 +1657,19 @@ class Train():
 
         metadata = {
             'seed': int(self.seed),
+            'results_tag': self.results_tag,
             'design_counter': self.design_counter,
             'episode_counter': self.episode_counter,
             'optimized_params': optimized_params,
-            'design_parameter_options': [int(option) for option in SnakeEnv.design_parameter_options],
+            'scale_design_schema_version': int(SnakeEnv.scale_design_schema_version),
+            'scale_design_mode': self.design_mode,
+            'scale_parameter_names': list(SnakeEnv.design_parameter_names),
+            'scale_parameter_bounds': [list(bounds) for bounds in SnakeEnv.design_parameter_bounds],
+            'scale_module_length': float(SnakeEnv.scale_module_length),
+            'scales_per_module': int(SnakeEnv.scales_per_module),
+            'active_terrains': list(self.terrain_sequence),
+            'episodes_per_terrain': int(self.training_terrain_block_size),
+            'observation_design_features': list(SnakeEnv.get_design_feature_labels()),
             'observation_dim': int(np.prod(self.env.observation_space.shape)),
             'action_dim': int(np.prod(self.env.action_space.shape)),
             'terrain_sequence': list(self.terrain_sequence),
@@ -1796,6 +1678,7 @@ class Train():
             'training_episode_schedule': list(self.training_episode_schedule),
             'training_schedule_design_counter': self.training_schedule_design_counter,
             'training_terrain_block_size': self.training_terrain_block_size,
+            'randomize_terrain_order': bool(self.randomize_terrain_order),
             'training_schedule_seed': self.current_schedule_seed,
             'policy_action_warmup_episodes': self.policy_action_warmup_episodes,
             'training_update_warmup_episodes': self.training_update_warmup_episodes,
@@ -1820,7 +1703,7 @@ class Train():
             'population_qf_lr': self.rl_alg._pop_sac_trainer_kwargs['qf_lr'],
             'individual_batch_fraction': self.replay._individual_batch_fraction,
             'use_legacy_policy_warm_start': self.use_legacy_policy_warm_start,
-            'legacy_checkpoint_prefix': self.legacy_checkpoint_prefix if self.use_legacy_policy_warm_start else None,
+            'legacy_checkpoint_prefix': None,
             'design_slot_names': list(SnakeEnv.design_slot_names),
         }
 
@@ -1833,6 +1716,47 @@ class Train():
         print(f"checkpoint prefix: {checkpoint_prefix}")
 
     def load_networks(self, base_path, checkpoint_prefix):
+        metadata_path = self._resolve_tagged_path(base_path, f'{checkpoint_prefix}_metadata', 'json')
+        if not os.path.exists(metadata_path):
+            raise FileNotFoundError(
+                f"No metadata file found for checkpoint prefix '{checkpoint_prefix}'. "
+                "Resume requires metadata so the correct design cycle, episode, "
+                "terrain schedule, and optimized design can be restored."
+            )
+
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+
+        if 'design_parameter_options' in metadata:
+            raise RuntimeError(
+                "This checkpoint uses the old categorical scale-placement schema. "
+                "It is incompatible with continuous scale-parameter training. "
+                "Start fresh or resume a checkpoint created after the scale-parameter conversion."
+            )
+
+        schema_version = int(metadata.get('scale_design_schema_version', -1))
+        if schema_version != int(SnakeEnv.scale_design_schema_version):
+            raise RuntimeError(
+                f"Checkpoint schema version {schema_version} is incompatible with "
+                f"current schema version {SnakeEnv.scale_design_schema_version}."
+            )
+
+        expected_obs_dim = int(np.prod(self.env.observation_space.shape))
+        saved_obs_dim = int(metadata.get('observation_dim', -1))
+        if saved_obs_dim != expected_obs_dim:
+            raise RuntimeError(
+                f"Checkpoint observation_dim={saved_obs_dim} does not match "
+                f"current observation_dim={expected_obs_dim}."
+            )
+
+        expected_action_dim = int(np.prod(self.env.action_space.shape))
+        saved_action_dim = int(metadata.get('action_dim', -1))
+        if saved_action_dim != expected_action_dim:
+            raise RuntimeError(
+                f"Checkpoint action_dim={saved_action_dim} does not match "
+                f"current action_dim={expected_action_dim}."
+            )
+
         self.rl_alg._ind_policy.load_state_dict(self._load_trusted_checkpoint(
             self._resolve_tagged_path(base_path, f'ind_policy_{checkpoint_prefix}', 'pt')
         ).state_dict())
@@ -1867,28 +1791,74 @@ class Train():
 
         print(f"loaded networks from checkpoint: {checkpoint_prefix}")
 
-        metadata_path = self._resolve_tagged_path(base_path, f'{checkpoint_prefix}_metadata', 'json')
-
-        if os.path.exists(metadata_path):
-            with open(metadata_path, 'r') as f:
-                metadata = json.load(f)
+        if metadata:
             self.seed = int(metadata.get('seed', self.seed))
             self.design_counter = metadata['design_counter']
             self.episode_counter = metadata['episode_counter']
             self.optimized_params = metadata.get('optimized_params', None)
             if self.optimized_params is not None:
                 self.optimized_params = SnakeEnv._coerce_design_vector(self.optimized_params)
-            self.training_terrain_block_order = metadata.get('training_terrain_block_order', [])
-            self.training_episode_schedule = metadata.get('training_episode_schedule', [])
-            self.training_schedule_design_counter = metadata.get(
-                'training_schedule_design_counter',
-                self.design_counter if self.training_episode_schedule else None,
+            self.design_mode = metadata.get('scale_design_mode', self.design_mode).strip().lower()
+            self.initial_designs = SnakeEnv.get_init_design_parameters(self.design_mode)
+            self.num_init_designs = len(self.initial_designs)
+
+            saved_terrain_sequence = metadata.get(
+                'active_terrains',
+                metadata.get('terrain_sequence', self.terrain_sequence),
             )
-            self.training_terrain_block_size = metadata.get(
-                'training_terrain_block_size',
-                self.training_terrain_block_size,
+            saved_terrain_sequence = self._parse_active_terrains(','.join(saved_terrain_sequence))
+            saved_training_block_size = int(
+                metadata.get(
+                    'episodes_per_terrain',
+                    metadata.get('training_terrain_block_size', self.training_terrain_block_size),
+                )
             )
-            self.current_schedule_seed = metadata.get('training_schedule_seed', self.current_schedule_seed)
+            self.randomize_terrain_order = self._read_bool_env(
+                'SNAKE_RANDOMIZE_TERRAIN_ORDER',
+                default=bool(metadata.get('randomize_terrain_order', self.randomize_terrain_order)),
+            )
+
+            requested_terrain_sequence = saved_terrain_sequence
+            if os.getenv('SNAKE_ACTIVE_TERRAINS') is not None:
+                requested_terrain_sequence = self._parse_active_terrains()
+            requested_training_block_size = saved_training_block_size
+            if os.getenv('SNAKE_EPISODES_PER_TERRAIN') is not None:
+                requested_training_block_size = max(1, int(os.getenv('SNAKE_EPISODES_PER_TERRAIN')))
+
+            terrain_changed = requested_terrain_sequence != saved_terrain_sequence
+            block_size_changed = requested_training_block_size != saved_training_block_size
+            if (terrain_changed or block_size_changed) and int(self.episode_counter) != 0:
+                raise RuntimeError(
+                    "Changing SNAKE_ACTIVE_TERRAINS or SNAKE_EPISODES_PER_TERRAIN during "
+                    "a design is not supported. Resume at a design boundary where "
+                    "episode_counter == 0, or keep the checkpoint terrain settings."
+                )
+
+            self.terrain_sequence = requested_terrain_sequence
+            self.training_terrain_block_size = requested_training_block_size
+            saved_results_tag = metadata.get('results_tag')
+            if saved_results_tag and os.getenv('SNAKE_ACTIVE_TERRAINS') is None and os.getenv('SNAKE_RESULTS_TAG') is None:
+                self.results_tag = saved_results_tag
+            self.legacy_results_tags = list(dict.fromkeys(
+                tag for tag in ([self.results_tag, saved_results_tag] + self.terrain_sequence + ['carton'])
+                if tag
+            ))
+            if terrain_changed or block_size_changed:
+                self.training_terrain_block_order = []
+                self.training_episode_schedule = []
+                self.training_schedule_design_counter = None
+                self.current_schedule_seed = None
+            else:
+                self.training_terrain_block_order = metadata.get('training_terrain_block_order', [])
+                self.training_episode_schedule = metadata.get('training_episode_schedule', [])
+                self.training_schedule_design_counter = metadata.get(
+                    'training_schedule_design_counter',
+                    self.design_counter if self.training_episode_schedule else None,
+                )
+            self.current_schedule_seed = (
+                None if (terrain_changed or block_size_changed)
+                else metadata.get('training_schedule_seed', self.current_schedule_seed)
+            )
             self.policy_action_warmup_episodes = metadata.get(
                 'policy_action_warmup_episodes',
                 self.policy_action_warmup_episodes,
@@ -1954,23 +1924,22 @@ class Train():
                     )
                 )
             )
-            self.use_legacy_policy_warm_start = metadata.get(
-                'use_legacy_policy_warm_start',
-                self.use_legacy_policy_warm_start,
-            )
-            saved_legacy_checkpoint = metadata.get('legacy_checkpoint_prefix')
-            if saved_legacy_checkpoint:
-                self.legacy_checkpoint_prefix = saved_legacy_checkpoint
-            default_pop_train_start_design = '2' if self.use_legacy_policy_warm_start else '0'
-            default_terrain_prefill_episodes = '1' if self.use_legacy_policy_warm_start else '0'
-            default_action_noise_std = '0.0' if self.use_legacy_policy_warm_start else '0.10'
-            default_repeat_action_eps = '0.0' if self.use_legacy_policy_warm_start else '0.02'
-            default_repeat_action_perturb_std = '0.0' if self.use_legacy_policy_warm_start else '0.08'
-            default_policy_warmup_episodes = '0' if self.use_legacy_policy_warm_start else str(self.policy_action_warmup_episodes)
-            default_update_warmup_episodes = '0' if self.use_legacy_policy_warm_start else str(self.training_update_warmup_episodes)
-            default_random_action_prob_start = '0.0' if self.use_legacy_policy_warm_start else str(self.random_action_prob_start)
-            default_random_action_prob_decay = '0.0' if self.use_legacy_policy_warm_start else str(self.random_action_prob_decay)
-            default_random_action_prob_min = '0.0' if self.use_legacy_policy_warm_start else str(self.random_action_prob_min)
+            if metadata.get('use_legacy_policy_warm_start', False):
+                raise RuntimeError(
+                    "This checkpoint was saved from a legacy warm-start run and is not "
+                    "compatible with continuous scale-parameter training."
+                )
+            self.use_legacy_policy_warm_start = False
+            default_pop_train_start_design = '0'
+            default_terrain_prefill_episodes = '0'
+            default_action_noise_std = '0.10'
+            default_repeat_action_eps = '0.02'
+            default_repeat_action_perturb_std = '0.08'
+            default_policy_warmup_episodes = str(self.policy_action_warmup_episodes)
+            default_update_warmup_episodes = str(self.training_update_warmup_episodes)
+            default_random_action_prob_start = str(self.random_action_prob_start)
+            default_random_action_prob_decay = str(self.random_action_prob_decay)
+            default_random_action_prob_min = str(self.random_action_prob_min)
             self.population_training_start_design = int(
                 os.getenv('SNAKE_POP_TRAIN_START_DESIGN', default_pop_train_start_design)
             )
@@ -2034,6 +2003,7 @@ class Train():
         if os.path.exists(replay_path):
             if not self.load_replay(replay_path):
                 raise RuntimeError(f"Replay buffer could not be restored from {replay_path}.")
+            self._refresh_active_terrain_filter()
             print("Replay contains", self.replay._individual_buffer._size, "steps")
         else:
             raise FileNotFoundError(
@@ -2259,13 +2229,15 @@ class Train():
         rewardDF['Terrain_ID'] = [self.current_training_terrain_id] * len(self.timesteps)
         rewardDF['Terrain_Block_Index'] = [self.current_training_block_index] * len(self.timesteps)
         rewardDF['Episode_In_Terrain_Block'] = [self.current_training_episode_in_block] * len(self.timesteps)
-        rewardDF['Design_Config'] = ['|'.join(str(int(value)) for value in design)] * len(self.timesteps)
-        for slot_idx, design_id in enumerate(design):
-            if slot_idx < len(SnakeEnv.design_slot_names):
-                slot_name = SnakeEnv.design_slot_names[slot_idx]
-            else:
-                slot_name = f'Plate{slot_idx + 1}'
-            rewardDF[f'Design_{slot_name}'] = [int(design_id)] * len(self.timesteps)
+        design_summary = self._scale_design_summary_fields(design)
+        for column_name, value in design_summary.items():
+            rewardDF[column_name] = [value] * len(self.timesteps)
+        for module in SnakeEnv.expand_design_to_modules(design):
+            module_idx = module['module']
+            rewardDF[f'Module{module_idx}_Scale_Group'] = [module['group']] * len(self.timesteps)
+            rewardDF[f'Module{module_idx}_Width_Ratio'] = [module['width_ratio']] * len(self.timesteps)
+            rewardDF[f'Module{module_idx}_Actual_Width'] = [module['actual_width']] * len(self.timesteps)
+            rewardDF[f'Module{module_idx}_Attack_Angle_Deg'] = [module['attack_angle_deg']] * len(self.timesteps)
 
         # log state variablesmotor_and_coadaptation/CoadaptationCode/train_coadapt.py
         for motor_idx, motor_actions in enumerate(self.actionList):
@@ -2338,8 +2310,9 @@ if __name__ == '__main__':
     base_path = trainingObj._checkpoint_results_dir()
     checkpoint_prefix = os.getenv("SNAKE_CHECKPOINT_PREFIX")
 
-    # Default to a fresh legacy-warm-start run. Set SNAKE_RESUME_CHECKPOINT=1
-    # when you intentionally want to continue a saved results_bazyli checkpoint.
+    # Default to a fresh continuous scale-parameter run. Set
+    # SNAKE_RESUME_CHECKPOINT=1 when you intentionally want to continue a
+    # saved results_bazyli checkpoint created with the same scale schema.
     resuming_from_checkpoint = trainingObj._read_bool_env("SNAKE_RESUME_CHECKPOINT", default=False)
 
     if resuming_from_checkpoint:

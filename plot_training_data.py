@@ -407,6 +407,75 @@ def plot_terrain_summary(summary: pd.DataFrame, output_dir: Path) -> Path:
     return path
 
 
+def plot_mean_displacement(summary: pd.DataFrame, output_dir: Path) -> Path:
+    terrain_stats = (
+        summary.groupby("terrain", as_index=False)
+        .agg(
+            mean_delta_x=("delta_x", "mean"),
+            std_delta_x=("delta_x", "std"),
+            mean_delta_y=("delta_y", "mean"),
+            std_delta_y=("delta_y", "std"),
+        )
+        .fillna(0.0)
+    )
+    terrain_stats["mean_net_displacement"] = np.sqrt(
+        terrain_stats["mean_delta_x"] ** 2 + terrain_stats["mean_delta_y"] ** 2
+    )
+    net_std = (
+        summary.assign(
+            net_displacement_per_episode=np.sqrt(
+                summary["delta_x"] ** 2 + summary["delta_y"] ** 2
+            )
+        )
+        .groupby("terrain", as_index=False)["net_displacement_per_episode"]
+        .std()
+        .rename(columns={"net_displacement_per_episode": "std_net_displacement"})
+        .fillna(0.0)
+    )
+    terrain_stats = terrain_stats.merge(net_std, on="terrain", how="left").fillna(0.0)
+
+    order = terrain_order(summary)
+    terrain_stats["terrain"] = pd.Categorical(
+        terrain_stats["terrain"], categories=order, ordered=True
+    )
+    terrain_stats = terrain_stats.sort_values("terrain").reset_index(drop=True)
+
+    x = np.arange(len(terrain_stats))
+    labels = [str(name).replace("_", " ") for name in terrain_stats["terrain"]]
+    colors = [color_for_terrain(str(name), i) for i, name in enumerate(terrain_stats["terrain"])]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.4))
+    metrics = [
+        ("mean_delta_x", "std_delta_x", "Mean episode delta X"),
+        ("mean_delta_y", "std_delta_y", "Mean episode delta Y"),
+        ("mean_net_displacement", "std_net_displacement", "Mean net displacement"),
+    ]
+
+    for ax, (mean_col, std_col, title) in zip(axes, metrics):
+        ax.bar(
+            x,
+            terrain_stats[mean_col],
+            yerr=terrain_stats[std_col],
+            color=colors,
+            alpha=0.82,
+            capsize=4,
+            edgecolor="white",
+            linewidth=0.8,
+        )
+        ax.axhline(0, color="#777777", lw=0.9, alpha=0.8)
+        ax.set_xticks(x, labels, rotation=25, ha="right")
+        ax.set_ylabel("Displacement")
+        ax.set_title(title)
+        finish_axis(ax, xlabel=None)
+
+    fig.suptitle("Mean episode displacement by terrain")
+    fig.tight_layout()
+    path = output_dir / "mean_displacement_by_terrain.png"
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
 def plot_trajectories(rewards: pd.DataFrame, summary: pd.DataFrame, output_dir: Path) -> Path:
     blocks = (
         summary[["terrain_block", "terrain"]]
@@ -742,6 +811,7 @@ def main() -> None:
     plots = [
         plot_episode_overview(episode_summary, output_dir),
         plot_terrain_summary(episode_summary, output_dir),
+        plot_mean_displacement(episode_summary, output_dir),
         plot_trajectories(cleaned_rewards, episode_summary, output_dir),
         plot_reward_components(episode_summary, output_dir),
         plot_action_heatmap(cleaned_rewards, episode_summary, output_dir),

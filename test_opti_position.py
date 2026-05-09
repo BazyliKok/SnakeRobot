@@ -27,6 +27,13 @@ def _changed(curr, prev, eps):
     return any(abs(c - p) > eps for c, p in zip(curr, prev))
 
 
+def test_changed_detects_initial_and_thresholded_pose_changes():
+    assert _changed([0.0, 0.0, 0.0], None, 1e-5)
+    assert not _changed([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 1e-5)
+    assert not _changed([0.0, 0.0, 0.0], [0.0, 0.0, 0.000001], 1e-5)
+    assert _changed([0.0, 0.0, 0.0], [0.0, 0.0, 0.001], 1e-5)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Monitor OptiTrack pose updates")
     parser.add_argument("--interval", type=float, default=0.1, help="seconds between polls")

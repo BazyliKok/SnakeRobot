@@ -150,12 +150,19 @@ print("Done loading selected episodes.")
 if loaded_samples == 0:
     raise RuntimeError(
         "No compatible replay samples were loaded. Use replay generated with the current "
-        "8-module observation/action spaces before running pso_designs.py."
+        "scale-parameter observation/action spaces before running pso_designs.py."
     )
 
 design_dim = len(SnakeEnv.design_parameter_bounds)
 obs_dim = env.observation_space.low.size
 action_dim = env.action_space.low.size
+design_mode = os.getenv("SNAKE_SCALE_DESIGN_MODE", "heterogeneous").strip().lower()
+active_terrains = [
+    terrain.strip()
+    for terrain in os.getenv("SNAKE_ACTIVE_TERRAINS", "carpet,foam").split(",")
+    if terrain.strip()
+]
+pop_replay.set_active_terrain_ids([SnakeEnv.get_terrain_id(terrain) for terrain in active_terrains])
 
 networks = SoftActorCriticCoadapt.create_networks(env)
 q_network = networks["population"]["qf1"]
@@ -163,7 +170,9 @@ policy_network = networks["population"]["policy"]
 
 print("env base obs dim:", env.observation_space.low.size)
 print("design dim:", design_dim)
-print("valid design IDs:", SnakeEnv.design_parameter_options)
+print("scale design mode:", design_mode)
+print("active terrains:", active_terrains)
+print("scale parameter bounds:", SnakeEnv.design_parameter_bounds)
 print("total obs dim (used):", obs_dim)
 print("action dim:", action_dim)
 print("Q input dim:", obs_dim + action_dim)
@@ -181,13 +190,15 @@ policy_network.load_state_dict(_torch_load(policy_state_path, map_location=ptu.d
 
 #run pso
 pso = PSO_batch(pop_replay, env)
-init_design = [SnakeEnv.design_parameter_options[0]] * design_dim  # initial guess
+init_design = SnakeEnv.get_default_design()
 
 print("Running PSO...")
 cost, best_design = pso.optimize_design(
     design=init_design,
     q_network=q_network,
-    policy_network=policy_network
+    policy_network=policy_network,
+    active_terrains=active_terrains,
+    design_mode=design_mode,
 )
 
 print("Best morphology parameters:", best_design)
