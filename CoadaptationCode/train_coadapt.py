@@ -1655,8 +1655,18 @@ class Train():
         if optimized_params is not None:
             optimized_params = SnakeEnv._coerce_design_vector(optimized_params)
 
+        matched_experiment_settings = {
+            'SNAKE_EXPERIMENT_SEED': str(int(self.seed)),
+            'SNAKE_ACTIVE_TERRAINS': ','.join(self.terrain_sequence),
+            'SNAKE_EPISODES_PER_TERRAIN': str(int(self.training_terrain_block_size)),
+            'SNAKE_EVAL_EPISODES_PER_TERRAIN': str(int(self.eval_episodes_per_terrain)),
+            'SNAKE_DESIGNS_PER_RUN': os.getenv('SNAKE_DESIGNS_PER_RUN', 'all'),
+            'SNAKE_RANDOMIZE_TERRAIN_ORDER': '1' if self.randomize_terrain_order else '0',
+        }
+
         metadata = {
             'seed': int(self.seed),
+            'matched_experiment_settings': matched_experiment_settings,
             'results_tag': self.results_tag,
             'design_counter': self.design_counter,
             'episode_counter': self.episode_counter,
