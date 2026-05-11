@@ -1,0 +1,260 @@
+{
+  "summary": {
+    "Date": "2026_04_21",
+    "Experiment_Seed": 111,
+    "Training_Schedule_Seed": 2861121500,
+    "Design_Counter": 0,
+    "Episode_Counter": 32,
+    "Design_Config": "7|7|7|7|7|7|7|7",
+    "Training_Episodes_Per_Design": 32,
+    "Training_Terrain_Block_Size": 8,
+    "Training_Terrain_Block_Order": "cardboard|artificial_grass|carpet|foam",
+    "Eval_Episodes_Per_Terrain": 0,
+    "Score_Source": "training_replay",
+    "Training_Score_Last_Episodes_Per_Terrain": 1,
+    "Overall_Total_Eval_Rollouts": 0,
+    "Overall_Valid_Eval_Rollouts": 0,
+    "Overall_Reset_Failures": 0,
+    "Overall_Motor_Faults": 0,
+    "Overall_Failed_Eval_Rollouts": 0,
+    "Mean_Return": 2.6732654571533203,
+    "Std_Across_Terrains": 23.036001205444336,
+    "Worst_Terrain_Return": -26.95983123779297,
+    "Overall_Mean_Return": 2.6732654571533203,
+    "Std_Across_Terrain_Means": 23.036001205444336,
+    "Robustness_Lambda": 0.5,
+    "Robustness_Score": -8.844735145568848,
+    "Design_Module1": 7,
+    "Design_Module2": 7,
+    "Design_Module3": 7,
+    "Design_Module4": 7,
+    "Design_Module5": 7,
+    "Design_Module6": 7,
+    "Design_Module7": 7,
+    "Design_Module8": 7,
+    "artificial_grass_Training_Rollouts_Used": 1,
+    "artificial_grass_Mean_Return": 37.025665283203125,
+    "artificial_grass_Mean_Length": 122.0,
+    "artificial_grass_Last_Return": 37.02566356054798,
+    "cardboard_Training_Rollouts_Used": 1,
+    "cardboard_Mean_Return": -4.848051071166992,
+    "cardboard_Mean_Length": 175.0,
+    "cardboard_Last_Return": -4.848050933320176,
+    "carpet_Training_Rollouts_Used": 1,
+    "carpet_Mean_Return": 5.475279808044434,
+    "carpet_Mean_Length": 175.0,
+    "carpet_Last_Return": 5.475279688237864,
+    "foam_Training_Rollouts_Used": 1,
+    "foam_Mean_Return": -26.95983123779297,
+    "foam_Mean_Length": 175.0,
+    "foam_Last_Return": -26.9598303968145
+  },
+  "training_rollouts_used": {
+    "artificial_grass": [
+      37.02566356054798
+    ],
+    "cardboard": [
+      -4.848050933320176
+    ],
+    "carpet": [
+      5.475279688237864
+    ],
+    "foam": [
+      -26.9598303968145
+    ]
+  },
+  "all_reconstructed_training_rollouts": [
+    {
+      "terrain_id": 1,
+      "terrain": "cardboard",
+      "return": 2.970895551531467,
+      "length": 175
+    },
+    {
+      "terrain_id": 1,
+      "terrain": "cardboard",
+      "return": 2.8574264434510988,
+      "length": 175
+    },
+    {
+      "terrain_id": 1,
+      "terrain": "cardboard",
+      "return": 0.3231995923865658,
+      "length": 175
+    },
+    {
+      "terrain_id": 1,
+      "terrain": "cardboard",
+      "return": 7.038081289423217,
+      "length": 175
+    },
+    {
+      "terrain_id": 1,
+      "terrain": "cardboard",
+      "return": 4.220311516381606,
+      "length": 175
+    },
+    {
+      "terrain_id": 1,
+      "terrain": "cardboard",
+      "return": -8.659880518657745,
+      "length": 175
+    },
+    {
+      "terrain_id": 1,
+      "terrain": "cardboard",
+      "return": -6.97820919599415,
+      "length": 175
+    },
+    {
+      "terrain_id": 1,
+      "terrain": "cardboard",
+      "return": -4.848050933320176,
+      "length": 175
+    },
+    {
+      "terrain_id": 2,
+      "terrain": "artificial_grass",
+      "return": 14.07870981166224,
+      "length": 175
+    },
+    {
+      "terrain_id": 2,
+      "terrain": "artificial_grass",
+      "return": 19.443395710122267,
+      "length": 175
+    },
+    {
+      "terrain_id": 2,
+      "terrain": "artificial_grass",
+      "return": 10.692580455323716,
+      "length": 175
+    },
+    {
+      "terrain_id": 2,
+      "terrain": "artificial_grass",
+      "return": 16.305079420073533,
+      "length": 175
+    },
+    {
+      "terrain_id": 2,
+      "terrain": "artificial_grass",
+      "return": 9.064981942699575,
+      "length": 175
+    },
+    {
+      "terrain_id": 2,
+      "terrain": "artificial_grass",
+      "return": 18.494663474163467,
+      "length": 175
+    },
+    {
+      "terrain_id": 2,
+      "terrain": "artificial_grass",
+      "return": 35.53385325928993,
+      "length": 167
+    },
+    {
+      "terrain_id": 2,
+      "terrain": "artificial_grass",
+      "return": 37.02566356054798,
+      "length": 122
+    },
+    {
+      "terrain_id": 0,
+      "terrain": "carpet",
+      "return": 4.461239631494819,
+      "length": 175
+    },
+    {
+      "terrain_id": 0,
+      "terrain": "carpet",
+      "return": 5.623967382493257,
+      "length": 175
+    },
+    {
+      "terrain_id": 0,
+      "terrain": "carpet",
+      "return": 2.7863658050165405,
+      "length": 175
+    },
+    {
+      "terrain_id": 0,
+      "terrain": "carpet",
+      "return": 7.032945813006643,
+      "length": 175
+    },
+    {
+      "terrain_id": 0,
+      "terrain": "carpet",
+      "return": 5.556886084515705,
+      "length": 175
+    },
+    {
+      "terrain_id": 0,
+      "terrain": "carpet",
+      "return": 5.4567349131575655,
+      "length": 175
+    },
+    {
+      "terrain_id": 0,
+      "terrain": "carpet",
+      "return": 9.48085334214672,
+      "length": 175
+    },
+    {
+      "terrain_id": 0,
+      "terrain": "carpet",
+      "return": 5.475279688237864,
+      "length": 175
+    },
+    {
+      "terrain_id": 3,
+      "terrain": "foam",
+      "return": -8.788903009009887,
+      "length": 175
+    },
+    {
+      "terrain_id": 3,
+      "terrain": "foam",
+      "return": -15.16208288902424,
+      "length": 175
+    },
+    {
+      "terrain_id": 3,
+      "terrain": "foam",
+      "return": -22.069049663712615,
+      "length": 175
+    },
+    {
+      "terrain_id": 3,
+      "terrain": "foam",
+      "return": -8.118118915371438,
+      "length": 175
+    },
+    {
+      "terrain_id": 3,
+      "terrain": "foam",
+      "return": -13.97082290605844,
+      "length": 175
+    },
+    {
+      "terrain_id": 3,
+      "terrain": "foam",
+      "return": -14.442577156790113,
+      "length": 175
+    },
+    {
+      "terrain_id": 3,
+      "terrain": "foam",
+      "return": -2.2589258922168653,
+      "length": 175
+    },
+    {
+      "terrain_id": 3,
+      "terrain": "foam",
+      "return": -26.9598303968145,
+      "length": 175
+    }
+  ]
+}
