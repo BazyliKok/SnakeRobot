@@ -50,7 +50,7 @@ class Train():
         self.policy_action_warmup_episodes = 2  # full-random episodes before policy/random mixing starts
         self.training_update_warmup_episodes = 1  # collected episodes before SAC updates start
         self.design_cylces = 20 # total number of design cycles
-        self.design_mode = os.getenv('SNAKE_SCALE_DESIGN_MODE', 'heterogeneous').strip().lower()
+        self.design_mode = os.getenv('SNAKE_SCALE_DESIGN_MODE', 'homogeneous').strip().lower()
         self.initial_designs = SnakeEnv.get_init_design_parameters(self.design_mode)
         self.terrain_sequence = self._parse_active_terrains()
         self.training_terrain_block_size = max(
@@ -151,7 +151,7 @@ class Train():
 
         self.num_init_designs = len(self.initial_designs) # number of initial design cycles
         self.seed = int(os.getenv('SNAKE_EXPERIMENT_SEED', '12345'))
-        self.eval_episodes_per_terrain = max(0, int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '0')))
+        self.eval_episodes_per_terrain = max(0, int(os.getenv('SNAKE_EVAL_EPISODES_PER_TERRAIN', '3')))
         self.training_score_last_episodes_per_terrain = max(
             1,
             int(os.getenv('SNAKE_TRAINING_SCORE_LAST_EPISODES_PER_TERRAIN', '1')),
