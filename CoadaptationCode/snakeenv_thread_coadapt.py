@@ -154,12 +154,12 @@ class SnakeEnv(gymnasium.Env):
         self.progress_filter_alpha = 0.25
         # Keep a tiny deadzone for OptiTrack jitter, but still reward the
         # millimeter-to-centimeter progress this robot makes per control step.
-        self.progress_deadzone_cm = 0.05
+        self.progress_deadzone_cm = 0.02
         self.progress_fullscale_cm = 2.0
         self.progress_window_size = 6
-        self.window_progress_threshold_cm = 0.5
-        self.no_progress_penalty_max = 0.05
-        self.step_living_penalty = 0.02
+        self.window_progress_threshold_cm = 0.25
+        self.no_progress_penalty_max = 0.01
+        self.step_living_penalty = 0.005
         self.heading_penalty_deadzone = 25.0 / 180.0
         self.x_drift_penalty_scale = 0.10
         self.heading_penalty_scale = 0.05

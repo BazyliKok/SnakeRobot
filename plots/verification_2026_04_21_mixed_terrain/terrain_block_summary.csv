@@ -1,0 +1,2 @@
+terrain_block,terrain,episodes,first_episode,last_episode,mean_reward,median_reward,std_reward,best_reward,worst_reward,mean_progress_cm,mean_raw_progress_cm,mean_steps,mean_no_progress_steps,mean_backward_steps,mean_delta_x,mean_delta_y
+0,artificial_grass,1,0,0,23.298381193563102,23.298381193563102,,23.298381193563102,23.298381193563102,59.415969382977345,60.63520945608616,175.0,8.0,0.0,0.07022738456726063,-0.6096279481425882

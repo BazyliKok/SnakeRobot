@@ -27,6 +27,8 @@ REWARD_COMPONENTS = [
 
 ACTION_COLUMNS = [f"Motor{i}_Action" for i in range(1, 8)]
 
+VALID_LOG_SUFFIXES = {"", ".csv", ".txt"}
+
 TERRAIN_COLORS = {
     "artificial_grass": "#59A14F",
     "carpet": "#4E79A7",
@@ -60,7 +62,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--prefix",
-        default="2026_04_20",
+        default=None,
         help="Date/file prefix to search for, for example 2026_04_16.",
     )
     parser.add_argument(
@@ -90,20 +92,57 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def find_log_file(prefix: str, kind: str) -> Path:
-    matches = sorted(Path.cwd().glob(f"{prefix}{kind}*"))
-    valid_suffixes = {"", ".csv", ".txt"}
-    matches = [
+def valid_log_files(pattern: str) -> list[Path]:
+    return [
         path
-        for path in matches
-        if path.is_file() and path.suffix.lower() in valid_suffixes
+        for path in sorted(Path.cwd().glob(pattern))
+        if path.is_file() and path.suffix.lower() in VALID_LOG_SUFFIXES
     ]
+
+
+def log_prefix_from_path(path: Path, kind: str) -> str | None:
+    name = path.name
+    if kind not in name:
+        return None
+    return name.split(kind, maxsplit=1)[0]
+
+
+def discover_latest_log_prefix() -> str:
+    reward_files = valid_log_files("*Rewards*")
+    prefixes = sorted(
+        {
+            prefix
+            for reward_file in reward_files
+            if (prefix := log_prefix_from_path(reward_file, "Rewards")) is not None
+            and valid_log_files(f"{prefix}Losses*")
+        }
+    )
+    if not prefixes:
+        raise FileNotFoundError(
+            "No paired Rewards/Losses files found in the current folder."
+        )
+    return prefixes[-1]
+
+
+def find_log_file(prefix: str, kind: str) -> Path:
+    matches = valid_log_files(f"{prefix}{kind}*")
     if not matches:
         raise FileNotFoundError(f"No file found matching {prefix}{kind}*")
     if len(matches) > 1:
         names = ", ".join(path.name for path in matches)
         raise ValueError(f"Multiple {kind.lower()} files match {prefix}: {names}")
     return matches[0]
+
+
+def output_name_from_reward_file(reward_file: Path) -> str:
+    name = reward_file.stem if reward_file.suffix else reward_file.name
+    if "Rewards" in name:
+        before, after = name.split("Rewards", maxsplit=1)
+        if after:
+            name = f"{before.rstrip('_')}_{after.lstrip('_')}"
+        else:
+            name = before.rstrip("_")
+    return name.strip("_") or "training_plots"
 
 
 def sort_logs(frame: pd.DataFrame) -> pd.DataFrame:
@@ -201,6 +240,21 @@ def make_episode_summary(rewards: pd.DataFrame) -> pd.DataFrame:
         "no_progress_steps": ("No_Progress_Penalty", lambda s: int((s > 0).sum())),
         "backward_steps": ("Backward_Penalty", lambda s: int((s > 0).sum())),
     }
+    optional_last_columns = [
+        "Scale_Design_Mode",
+        "Design_Config",
+        "A_Width_Ratio",
+        "A_Attack_Angle_Deg",
+        "A_Actual_Width",
+        "B_Width_Ratio",
+        "B_Attack_Angle_Deg",
+        "B_Actual_Width",
+        "Width_Delta",
+        "Attack_Angle_Delta",
+    ]
+    for col in optional_last_columns:
+        if col in rewards.columns:
+            aggs[col.lower()] = (col, "last")
     for col in REWARD_COMPONENTS:
         if col in rewards.columns:
             aggs[f"sum_{col}"] = (col, "sum")
@@ -286,6 +340,60 @@ def finish_axis(ax: plt.Axes, xlabel: str | None = "Episode index") -> None:
     ax.spines["right"].set_visible(False)
 
 
+def moving_average(series: pd.Series, window: int | None = None) -> pd.Series:
+    if window is None:
+        window = max(3, min(10, int(np.ceil(len(series) * 0.12))))
+    return series.rolling(window=window, min_periods=1, center=True).mean()
+
+
+def plot_learning_curve(summary: pd.DataFrame, output_dir: Path) -> Path:
+    x = summary["Episode"]
+    reward_smooth = moving_average(summary["final_cumulative_reward"])
+    progress_smooth = moving_average(summary["sum_raw_progress_cm"])
+
+    fig, axes = plt.subplots(2, 1, figsize=(13, 7.5), sharex=True)
+    for ax in axes:
+        shade_terrain_blocks(ax, summary)
+
+    axes[0].scatter(
+        x,
+        summary["final_cumulative_reward"],
+        c=[color_for_terrain(t) for t in summary["terrain"]],
+        s=36,
+        alpha=0.72,
+        edgecolor="white",
+        linewidth=0.6,
+        label="Episode",
+    )
+    axes[0].plot(x, reward_smooth, color="#222222", lw=2.2, label="Smoothed trend")
+    axes[0].axhline(0, color="#777777", lw=0.9, alpha=0.8)
+    axes[0].set_ylabel("Final cumulative reward")
+    axes[0].set_title("Training learning curve")
+    axes[0].legend(frameon=False, loc="best")
+    finish_axis(axes[0], xlabel=None)
+
+    axes[1].bar(
+        x,
+        summary["sum_raw_progress_cm"],
+        color=[color_for_terrain(t) for t in summary["terrain"]],
+        alpha=0.42,
+        label="Raw progress per episode",
+    )
+    axes[1].plot(x, progress_smooth, color="#222222", lw=2.2, label="Smoothed trend")
+    axes[1].axhline(0, color="#777777", lw=0.9, alpha=0.8)
+    axes[1].set_ylabel("Raw forward progress (cm)")
+    axes[1].legend(frameon=False, loc="best")
+    finish_axis(axes[1])
+    axes[1].set_xticks(summary["Episode"])
+    axes[1].tick_params(axis="x", rotation=90)
+
+    fig.tight_layout()
+    path = output_dir / "thesis_learning_curve.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
 def plot_episode_overview(summary: pd.DataFrame, output_dir: Path) -> Path:
     x = summary["Episode"]
     fig, axes = plt.subplots(3, 1, figsize=(13, 10), sharex=True)
@@ -361,6 +469,61 @@ def plot_episode_overview(summary: pd.DataFrame, output_dir: Path) -> Path:
     return path
 
 
+def plot_reward_progress_alignment(summary: pd.DataFrame, output_dir: Path) -> Path:
+    fig, ax = plt.subplots(figsize=(8.5, 6.4))
+    terrains = terrain_order(summary)
+    for idx, terrain in enumerate(terrains):
+        terrain_summary = summary[summary["terrain"] == terrain]
+        ax.scatter(
+            terrain_summary["sum_raw_progress_cm"],
+            terrain_summary["final_cumulative_reward"],
+            color=color_for_terrain(terrain, idx),
+            s=48,
+            alpha=0.82,
+            edgecolor="white",
+            linewidth=0.6,
+            label=str(terrain).replace("_", " "),
+        )
+
+    if len(summary) >= 2:
+        x = summary["sum_raw_progress_cm"].to_numpy(dtype=float)
+        y = summary["final_cumulative_reward"].to_numpy(dtype=float)
+        if np.nanstd(x) > 0 and np.nanstd(y) > 0:
+            slope, intercept = np.polyfit(x, y, deg=1)
+            x_line = np.linspace(np.nanmin(x), np.nanmax(x), 100)
+            ax.plot(
+                x_line,
+                slope * x_line + intercept,
+                color="#222222",
+                lw=1.8,
+                label="Linear fit",
+            )
+            corr = np.corrcoef(x, y)[0, 1]
+            ax.text(
+                0.02,
+                0.98,
+                f"r = {corr:0.2f}",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=10,
+                color="#333333",
+            )
+
+    ax.axhline(0, color="#777777", lw=0.9, alpha=0.65)
+    ax.axvline(0, color="#777777", lw=0.9, alpha=0.65)
+    ax.set_xlabel("Raw forward progress (cm)")
+    ax.set_ylabel("Final cumulative reward")
+    ax.set_title("Reward alignment with physical progress")
+    ax.legend(frameon=False)
+    finish_axis(ax, xlabel="Raw forward progress (cm)")
+    fig.tight_layout()
+    path = output_dir / "reward_vs_progress_alignment.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
 def plot_terrain_summary(summary: pd.DataFrame, output_dir: Path) -> Path:
     order = terrain_order(summary)
     fig, axes = plt.subplots(1, 3, figsize=(14, 5.2))
@@ -402,6 +565,66 @@ def plot_terrain_summary(summary: pd.DataFrame, output_dir: Path) -> Path:
     fig.suptitle("Per-terrain episode distributions", y=1.02)
     fig.tight_layout()
     path = output_dir / "terrain_block_distributions.png"
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def comparison_label(row: pd.Series, multiple_designs: bool) -> str:
+    terrain = str(row["terrain"]).replace("_", " ")
+    if multiple_designs and "design_config" in row.index:
+        return f"{terrain}\n{row['design_config']}"
+    return terrain
+
+
+def plot_design_terrain_performance(summary: pd.DataFrame, output_dir: Path) -> Path | None:
+    has_design = "design_config" in summary.columns
+    if has_design:
+        group_cols = ["terrain", "design_config"]
+    else:
+        group_cols = ["terrain"]
+
+    metrics = [
+        ("final_cumulative_reward", "Mean final reward"),
+        ("sum_raw_progress_cm", "Mean raw progress (cm)"),
+        ("no_progress_steps", "Mean no-progress steps"),
+    ]
+    grouped = (
+        summary.groupby(group_cols, as_index=False)
+        .agg(
+            episodes=("Episode", "count"),
+            final_cumulative_reward=("final_cumulative_reward", "mean"),
+            sum_raw_progress_cm=("sum_raw_progress_cm", "mean"),
+            no_progress_steps=("no_progress_steps", "mean"),
+        )
+        .sort_values(group_cols)
+        .reset_index(drop=True)
+    )
+    if grouped.empty:
+        return None
+
+    multiple_designs = has_design and summary["design_config"].nunique() > 1
+    x = np.arange(len(grouped))
+    labels = [comparison_label(row, multiple_designs) for _, row in grouped.iterrows()]
+    colors = [
+        color_for_terrain(str(row["terrain"]), i)
+        for i, (_, row) in enumerate(grouped.iterrows())
+    ]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5.5))
+    for ax, (metric, label) in zip(axes, metrics):
+        ax.bar(x, grouped[metric], color=colors, alpha=0.82, edgecolor="white", linewidth=0.8)
+        ax.axhline(0, color="#777777", lw=0.9, alpha=0.8)
+        ax.set_xticks(x, labels, rotation=25, ha="right")
+        ax.set_ylabel(label)
+        finish_axis(ax, xlabel=None)
+
+    title = "Terrain and scale-design performance"
+    if has_design and summary["design_config"].nunique() == 1:
+        title += f" ({summary['design_config'].iloc[0]})"
+    fig.suptitle(title)
+    fig.tight_layout()
+    path = output_dir / "design_terrain_performance.png"
     fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
     return path
@@ -471,6 +694,66 @@ def plot_mean_displacement(summary: pd.DataFrame, output_dir: Path) -> Path:
     fig.suptitle("Mean episode displacement by terrain")
     fig.tight_layout()
     path = output_dir / "mean_displacement_by_terrain.png"
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return path
+
+
+def selected_episode_ids(group: pd.DataFrame) -> list[int]:
+    episodes = group["Episode"].sort_values().to_numpy()
+    if len(episodes) <= 3:
+        return [int(ep) for ep in episodes]
+    positions = [0, len(episodes) // 2, len(episodes) - 1]
+    return [int(episodes[pos]) for pos in positions]
+
+
+def plot_selected_trajectories(
+    rewards: pd.DataFrame, summary: pd.DataFrame, output_dir: Path
+) -> Path:
+    group_cols = ["terrain"]
+    if "design_config" in summary.columns and summary["design_config"].nunique() > 1:
+        group_cols.append("design_config")
+
+    groups = list(summary.groupby(group_cols, sort=False))
+    n_panels = len(groups)
+    n_cols = min(2, max(1, n_panels))
+    n_rows = int(np.ceil(n_panels / n_cols))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(7 * n_cols, 5.4 * n_rows))
+    axes_array = np.atleast_1d(axes).ravel()
+
+    for ax_idx, (group_key, group_summary) in enumerate(groups):
+        ax = axes_array[ax_idx]
+        if not isinstance(group_key, tuple):
+            group_key = (group_key,)
+        terrain = str(group_key[0])
+        color = color_for_terrain(terrain, ax_idx)
+        chosen = selected_episode_ids(group_summary)
+
+        for label, ep in zip(["early", "middle", "late"], chosen):
+            ep_frame = rewards[rewards["Episode"] == ep].sort_values("Timestep")
+            if ep_frame.empty:
+                continue
+            x_relative = ep_frame["X_Position"] - ep_frame["X_Position"].iloc[0]
+            y_relative = ep_frame["Y_Position"] - ep_frame["Y_Position"].iloc[0]
+            ax.plot(x_relative, y_relative, lw=1.8, label=f"{label}: ep {ep}")
+            ax.scatter(x_relative.iloc[0], y_relative.iloc[0], color="#222222", s=22)
+            ax.scatter(x_relative.iloc[-1], y_relative.iloc[-1], color=color, marker="x", s=48)
+
+        title_parts = [terrain.replace("_", " ")]
+        if len(group_key) > 1:
+            title_parts.append(str(group_key[1]))
+        ax.set_title(" | ".join(title_parts))
+        ax.set_aspect("equal", adjustable="box")
+        ax.legend(frameon=False, fontsize=8)
+        ax.set_ylabel("Y displacement from episode start")
+        finish_axis(ax, xlabel="X displacement from episode start")
+
+    for ax in axes_array[n_panels:]:
+        ax.axis("off")
+
+    fig.suptitle("Early, middle, and late episode trajectories", y=1.02)
+    fig.tight_layout()
+    path = output_dir / "selected_trajectory_progression.png"
     fig.savefig(path, dpi=180, bbox_inches="tight")
     plt.close(fig)
     return path
@@ -786,9 +1069,24 @@ def print_summary(
 
 def main() -> None:
     args = parse_args()
-    reward_file = args.reward_file or find_log_file(args.prefix, "Rewards")
-    loss_file = args.loss_file or find_log_file(args.prefix, "Losses")
-    output_dir = args.output_dir or Path("plots") / f"{args.prefix}_mixed_terrain"
+    if args.reward_file:
+        reward_file = args.reward_file
+        prefix = log_prefix_from_path(reward_file, "Rewards")
+        if args.loss_file:
+            loss_file = args.loss_file
+        elif prefix is not None:
+            loss_file = find_log_file(prefix, "Losses")
+        else:
+            raise ValueError(
+                "Could not infer a loss file from --reward-file. "
+                "Please pass --loss-file as well."
+            )
+    else:
+        prefix = args.prefix or discover_latest_log_prefix()
+        reward_file = find_log_file(prefix, "Rewards")
+        loss_file = args.loss_file or find_log_file(prefix, "Losses")
+
+    output_dir = args.output_dir or Path("plots") / output_name_from_reward_file(reward_file)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rewards = sort_logs(pd.read_csv(reward_file))
@@ -809,9 +1107,13 @@ def main() -> None:
     save_csv(duplicate_losses, output_dir / "duplicate_loss_segments.csv")
 
     plots = [
+        plot_learning_curve(episode_summary, output_dir),
         plot_episode_overview(episode_summary, output_dir),
+        plot_reward_progress_alignment(episode_summary, output_dir),
         plot_terrain_summary(episode_summary, output_dir),
+        plot_design_terrain_performance(episode_summary, output_dir),
         plot_mean_displacement(episode_summary, output_dir),
+        plot_selected_trajectories(cleaned_rewards, episode_summary, output_dir),
         plot_trajectories(cleaned_rewards, episode_summary, output_dir),
         plot_reward_components(episode_summary, output_dir),
         plot_action_heatmap(cleaned_rewards, episode_summary, output_dir),

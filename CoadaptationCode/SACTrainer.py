@@ -101,6 +101,14 @@ class SACTrainer(TorchTrainer):
                 ('Policy Loss', []),
                 ('Alpha', []),
                 ('Alpha Loss', []),
+                ('Q Target Mean', []),
+                ('Q Target Std', []),
+                ('Q1 Prediction Mean', []),
+                ('Q2 Prediction Mean', []),
+                ('Q1 TD Abs Mean', []),
+                ('Q2 TD Abs Mean', []),
+                ('Q1 TD Abs Max', []),
+                ('Q2 TD Abs Max', []),
             ]
         )
 
@@ -266,15 +274,19 @@ class SACTrainer(TorchTrainer):
         q1_pred = self.qf1(obs, actions)
         q2_pred = self.qf2(obs, actions)
         # Make sure policy accounts for squashing functions like tanh correctly!
-        new_next_actions, _, _, new_log_pi, *_ = self._policy_forward(next_obs)
-        target_q_values = torch.min(
-            self.target_qf1(next_obs, new_next_actions),
-            self.target_qf2(next_obs, new_next_actions),
-        ) - alpha * new_log_pi
+        with torch.no_grad():
+            new_next_actions, _, _, new_log_pi, *_ = self._policy_forward(next_obs)
+            target_q_values = torch.min(
+                self.target_qf1(next_obs, new_next_actions),
+                self.target_qf2(next_obs, new_next_actions),
+            ) - alpha * new_log_pi
 
-        q_target = self.reward_scale * rewards + (1. - terminals) * self.discount * target_q_values
-        qf1_loss = self.qf_criterion(q1_pred, q_target.detach())
-        qf2_loss = self.qf_criterion(q2_pred, q_target.detach())
+            q_target = self.reward_scale * rewards + (1. - terminals) * self.discount * target_q_values
+
+        qf1_loss = self.qf_criterion(q1_pred, q_target)
+        qf2_loss = self.qf_criterion(q2_pred, q_target)
+        q1_td_abs = torch.abs(q1_pred.detach() - q_target)
+        q2_td_abs = torch.abs(q2_pred.detach() - q_target)
 
         """
         Update networks
@@ -309,6 +321,14 @@ class SACTrainer(TorchTrainer):
         self._record_diagnostic('QF1 Loss', np.mean(ptu.get_numpy(qf1_loss.detach())))
         self._record_diagnostic('QF2 Loss', np.mean(ptu.get_numpy(qf2_loss.detach())))
         self._record_diagnostic('Policy Loss', policy_loss_value)
+        self._record_diagnostic('Q Target Mean', q_target.mean().item())
+        self._record_diagnostic('Q Target Std', q_target.std(unbiased=False).item())
+        self._record_diagnostic('Q1 Prediction Mean', q1_pred.detach().mean().item())
+        self._record_diagnostic('Q2 Prediction Mean', q2_pred.detach().mean().item())
+        self._record_diagnostic('Q1 TD Abs Mean', q1_td_abs.mean().item())
+        self._record_diagnostic('Q2 TD Abs Mean', q2_td_abs.mean().item())
+        self._record_diagnostic('Q1 TD Abs Max', q1_td_abs.max().item())
+        self._record_diagnostic('Q2 TD Abs Max', q2_td_abs.max().item())
         if self.use_automatic_entropy_tuning:
             self._record_diagnostic('Alpha', alpha.item())
             self._record_diagnostic('Alpha Loss', alpha_loss.item())

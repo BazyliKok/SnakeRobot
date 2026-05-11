@@ -95,6 +95,8 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             trainer_kwargs=self._pop_sac_trainer_kwargs,
         )
 
+        self.last_ind_diagnostics = {}
+        self.last_pop_diagnostics = {}
         
 
     
@@ -145,6 +147,8 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         self.popQ1losses = [] 
         self.popQ2losses = [] 
         self.popPolicylosses = [] 
+        self.last_ind_diagnostics = {}
+        self.last_pop_diagnostics = {}
 
         print('IN TRAINING')
         if train_ind:
@@ -163,6 +167,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
                 #print('trained')
             
             traindata = self._ind_algorithm.get_diagnostics()
+            self.last_ind_diagnostics = dict(traindata)
             self.trainQ1losses.append(traindata['QF1 Loss'])
             self.trainQ2losses.append(traindata['QF2 Loss'])
             self.trainPolicylosses.append(traindata['Policy Loss'])
@@ -183,6 +188,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
                 self._pop_algorithm.train(batch)
 
             traindataPop = self._pop_algorithm.get_diagnostics()
+            self.last_pop_diagnostics = dict(traindataPop)
             self.popQ1losses.append(traindataPop['QF1 Loss'])
             self.popQ2losses.append(traindataPop['QF2 Loss'])
             self.popPolicylosses.append(traindataPop['Policy Loss'])

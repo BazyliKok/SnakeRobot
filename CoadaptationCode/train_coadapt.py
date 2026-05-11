@@ -39,6 +39,18 @@ if (
     rlkit_networks.FlattenMlp = rlkit_networks.ConcatMlp
 
 class Train():
+    LOSS_DIAGNOSTIC_KEYS = [
+        'Q Target Mean',
+        'Q Target Std',
+        'Q1 Prediction Mean',
+        'Q2 Prediction Mean',
+        'Q1 TD Abs Mean',
+        'Q2 TD Abs Mean',
+        'Q1 TD Abs Max',
+        'Q2 TD Abs Max',
+        'Alpha',
+    ]
+
     def __init__(self):        
 
         self.env = gym.make("SnakeRobot")
@@ -97,9 +109,9 @@ class Train():
 
         # Keep some exploration for fresh runs. The continuous scale-parameter
         # experiment intentionally starts from scratch by default.
-        default_action_noise_std = '0.10'
+        default_action_noise_std = '0.02'
         default_repeat_action_eps = '0.02'
-        default_repeat_action_perturb_std = '0.08'
+        default_repeat_action_perturb_std = '0.02'
         self.action_noise_std = max(
             0.0,
             float(os.getenv('SNAKE_ACTION_NOISE_STD', default_action_noise_std)),
@@ -112,9 +124,9 @@ class Train():
             0.0,
             float(os.getenv('SNAKE_REPEAT_ACTION_PERTURB_STD', default_repeat_action_perturb_std)),
         )
-        self.random_action_prob_start = 0.3
-        self.random_action_prob_decay = 0.02
-        self.random_action_prob_min = 0.1
+        self.random_action_prob_start = 0.2
+        self.random_action_prob_decay = 0.05
+        self.random_action_prob_min = 0.0
         default_pop_train_start_design = '0'
         default_terrain_prefill_episodes = '0'
         default_policy_warmup_episodes = str(self.policy_action_warmup_episodes)
@@ -293,6 +305,8 @@ class Train():
         self.popq1loss = []
         self.popq2loss = []
         self.poppolicyloss = []
+        self.ind_loss_diagnostics = {key: [] for key in self.LOSS_DIAGNOSTIC_KEYS}
+        self.pop_loss_diagnostics = {key: [] for key in self.LOSS_DIAGNOSTIC_KEYS}
         self.progressRewardComponents = []
         self.distanceProgressCmComponents = []
         self.rawDistanceProgressCmComponents = []
@@ -1222,6 +1236,16 @@ class Train():
             self.popq1loss.extend(popq1loss)
             self.popq2loss.extend(popq2loss)
             self.poppolicyloss.extend(poppolicyloss)
+            self._append_loss_diagnostics(
+                self.ind_loss_diagnostics,
+                getattr(self.rl_alg, 'last_ind_diagnostics', {}),
+                len(q1loss),
+            )
+            self._append_loss_diagnostics(
+                self.pop_loss_diagnostics,
+                getattr(self.rl_alg, 'last_pop_diagnostics', {}),
+                len(q1loss),
+            )
             self.epListLoss.extend([self.episode_counter] * len(q1loss))
         elif experience_collected:
             if (0 if self.episode_counter is None else int(self.episode_counter)) < self.training_update_warmup_episodes:
@@ -1237,6 +1261,13 @@ class Train():
                 )
         self.logTrainLoss() # log data
         self.episode_counter += 1
+
+    def _append_loss_diagnostics(self, target, diagnostics, row_count):
+        for key in self.LOSS_DIAGNOSTIC_KEYS:
+            value = np.nan
+            if diagnostics and key in diagnostics:
+                value = diagnostics[key]
+            target[key].extend([value] * row_count)
 
         print(f'episode counter at: {self.episode_counter}')
 
@@ -1942,9 +1973,9 @@ class Train():
             self.use_legacy_policy_warm_start = False
             default_pop_train_start_design = '0'
             default_terrain_prefill_episodes = '0'
-            default_action_noise_std = '0.10'
+            default_action_noise_std = '0.02'
             default_repeat_action_eps = '0.02'
-            default_repeat_action_perturb_std = '0.08'
+            default_repeat_action_perturb_std = '0.02'
             default_policy_warmup_episodes = str(self.policy_action_warmup_episodes)
             default_update_warmup_episodes = str(self.training_update_warmup_episodes)
             default_random_action_prob_start = str(self.random_action_prob_start)
@@ -2274,6 +2305,10 @@ class Train():
         lossDF['Pop_Q1_Loss'] = self.popq1loss
         lossDF['Pop_Q2_Loss'] = self.popq2loss
         lossDF['Pop_Policy_Loss'] = self.poppolicyloss
+        for key in self.LOSS_DIAGNOSTIC_KEYS:
+            column_suffix = key.replace(' ', '_')
+            lossDF[f'Ind_{column_suffix}'] = self.ind_loss_diagnostics[key]
+            lossDF[f'Pop_{column_suffix}'] = self.pop_loss_diagnostics[key]
         self._upsert_csv_rows(self.lossFilename, lossDF, ['Run_ID', 'Episode'])
 
 
