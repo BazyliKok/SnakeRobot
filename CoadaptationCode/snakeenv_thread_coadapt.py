@@ -158,11 +158,11 @@ class SnakeEnv(gymnasium.Env):
         self.progress_fullscale_cm = 2.0
         self.progress_window_size = 6
         self.window_progress_threshold_cm = 0.25
-        self.no_progress_penalty_max = 0.01
+        self.no_progress_penalty_max = 0.002
         self.step_living_penalty = 0.2 / 175.0
         self.heading_penalty_deadzone = 25.0 / 180.0
         self.x_drift_penalty_scale = 0.07
-        self.heading_penalty_scale = 0.05
+        self.heading_penalty_scale = 0.02
         self.terminal_reward_bonus = 5.0
         self.reward_clip_min = -3.0
         self.reward_clip_max = 6.0
