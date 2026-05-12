@@ -113,6 +113,8 @@ class Train():
         self.current_update_seed = None
         self.current_design_optimization_seed = None
         self._last_individual_reset_key = None
+        self.resume_checkpoint_prefix = None
+        self.run_start_episode = 0
 
         # Keep some exploration for fresh runs. The continuous scale-parameter
         # experiment intentionally starts from scratch by default.
@@ -2693,6 +2695,8 @@ class Train():
                 ),
             )
             self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size
+            self.resume_checkpoint_prefix = checkpoint_prefix
+            self.run_start_episode = int(self.episode_counter)
             self._seed_global_rngs('resume', self.design_counter, self.episode_counter)
             print(f"restored design_counter={self.design_counter}, episode_counter={self.episode_counter}")
             print(
@@ -2930,6 +2934,8 @@ class Train():
         rewardDF = pd.DataFrame()
 
         rewardDF['Run_ID'] = [self.run_id] * len(self.timesteps)
+        rewardDF['Run_Start_Episode'] = [self.run_start_episode] * len(self.timesteps)
+        rewardDF['Resume_Checkpoint'] = [self.resume_checkpoint_prefix] * len(self.timesteps)
         rewardDF['Episode'] = [self.episode_counter]* len(self.timesteps)
         rewardDF['Timestep'] = self.timesteps
         rewardDF['X_Position']= xPositionList # added this, need to see if it works
@@ -2981,6 +2987,8 @@ class Train():
     def logTrainLoss(self):
         lossDF = pd.DataFrame()
         lossDF['Run_ID'] = [self.run_id] * len(self.epListLoss)
+        lossDF['Run_Start_Episode'] = [self.run_start_episode] * len(self.epListLoss)
+        lossDF['Resume_Checkpoint'] = [self.resume_checkpoint_prefix] * len(self.epListLoss)
         lossDF['Episode'] = self.epListLoss
         lossDF['Ind_Q1_Loss'] = self.q1loss
         lossDF['Ind_Q2_Loss'] = self.q2loss

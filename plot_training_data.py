@@ -82,11 +82,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--duplicate-policy",
-        choices=("latest", "first"),
-        default="latest",
+        choices=("timeline", "latest", "first"),
+        default="timeline",
         help=(
-            "How to choose a segment when an episode index appears under multiple "
-            "Run_ID values."
+            "How to choose rows when episode indices appear under multiple Run_ID "
+            "values. 'timeline' treats a later run starting at episode N as a "
+            "non-destructive resume branch that supersedes older rows from N onward."
         ),
     )
     return parser.parse_args()
@@ -172,8 +173,51 @@ def segment_summary(frame: pd.DataFrame) -> pd.DataFrame:
         aggregations["sum_progress_cm"] = ("Distance_Progress_Cm", "sum")
     if "Raw_Distance_Progress_Cm" in frame:
         aggregations["sum_raw_progress_cm"] = ("Raw_Distance_Progress_Cm", "sum")
+    if "Run_Start_Episode" in frame:
+        aggregations["run_start_episode"] = ("Run_Start_Episode", "last")
+    if "Resume_Checkpoint" in frame:
+        aggregations["resume_checkpoint"] = ("Resume_Checkpoint", "last")
 
     return frame.groupby(group_cols, as_index=False).agg(**aggregations)
+
+
+def select_timeline_segments(segments: pd.DataFrame) -> pd.DataFrame:
+    """Stitch non-destructive resume runs into one active timeline."""
+    if segments.empty:
+        return segments.copy()
+
+    selected = segments.iloc[0:0].copy()
+    run_summaries = []
+    for run_id, run_segments in segments.groupby("Run_ID", sort=False):
+        first_episode = pd.to_numeric(run_segments["Episode"], errors="coerce").min()
+        run_start_episode = first_episode
+        if "run_start_episode" in run_segments:
+            explicit_start = pd.to_numeric(
+                run_segments["run_start_episode"],
+                errors="coerce",
+            ).dropna()
+            if not explicit_start.empty:
+                run_start_episode = explicit_start.min()
+        run_summaries.append(
+            {
+                "Run_ID": run_id,
+                "run_start_episode": run_start_episode,
+                "first_episode": first_episode,
+            }
+        )
+
+    ordered_runs = (
+        pd.DataFrame(run_summaries)
+        .sort_values(["Run_ID", "run_start_episode", "first_episode"])
+    )
+    for row in ordered_runs.itertuples(index=False):
+        run_segments = segments[segments["Run_ID"] == row.Run_ID]
+        selected = selected[
+            pd.to_numeric(selected["Episode"], errors="coerce") < row.run_start_episode
+        ]
+        selected = pd.concat([selected, run_segments], ignore_index=True)
+
+    return selected
 
 
 def choose_duplicate_segments(
@@ -184,11 +228,14 @@ def choose_duplicate_segments(
         segments.duplicated("Episode", keep=False)
     ].copy()
 
-    ordered = segments.sort_values(["Episode", "Run_ID"])
-    if policy == "latest":
-        selected = ordered.groupby("Episode", as_index=False).tail(1)
+    if policy == "timeline":
+        selected = select_timeline_segments(segments)
     else:
-        selected = ordered.groupby("Episode", as_index=False).head(1)
+        ordered = segments.sort_values(["Episode", "Run_ID"])
+        if policy == "latest":
+            selected = ordered.groupby("Episode", as_index=False).tail(1)
+        else:
+            selected = ordered.groupby("Episode", as_index=False).head(1)
 
     selected_keys = set(zip(selected["Episode"], selected["Run_ID"]))
     selected_mask = [
