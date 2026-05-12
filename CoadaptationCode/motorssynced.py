@@ -70,6 +70,8 @@ class MotorsSynced:
             else None
         )
         self.REBOOT_WAIT_SECONDS            = float(os.getenv("SNAKE_DXL_REBOOT_WAIT_S", "1.5"))
+        self.DEVICE_REAPPEAR_WAIT_SECONDS   = float(os.getenv("SNAKE_DXL_DEVICE_WAIT_S", "6.0"))
+        self.DEVICE_REAPPEAR_POLL_SECONDS   = float(os.getenv("SNAKE_DXL_DEVICE_POLL_S", "0.25"))
         self.RESET_TIMEOUT_SECONDS          = float(os.getenv("SNAKE_DXL_RESET_TIMEOUT_S", "10.0"))
         self.RESET_POLL_INTERVAL_SECONDS    = float(os.getenv("SNAKE_DXL_RESET_POLL_INTERVAL_S", "0.05"))
         self.RESET_POSITION_THRESHOLD       = int(os.getenv("SNAKE_DXL_RESET_THRESHOLD", "50"))
@@ -147,24 +149,35 @@ class MotorsSynced:
                 unique_candidates.append(candidate)
         return unique_candidates
 
-    def _refresh_device_name(self):
+    def _refresh_device_name(self, wait_for_device=False):
         if os.path.exists(self.DEVICENAME):
             return True
 
         if not self.AUTO_DETECT_DEVICE:
             return False
 
-        for candidate in self._candidate_device_names():
-            if os.path.exists(candidate):
-                if candidate != self.DEVICENAME:
-                    print(
-                        f"DYNAMIXEL device moved from {self.DEVICENAME} to {candidate}; "
-                        "using the new device."
-                    )
-                    self.DEVICENAME = candidate
-                    self.portHandler = PortHandler(self.DEVICENAME)
-                    self._reset_sync_handlers()
-                return True
+        deadline = time.time() + (self.DEVICE_REAPPEAR_WAIT_SECONDS if wait_for_device else 0.0)
+        while True:
+            for candidate in self._candidate_device_names():
+                if os.path.exists(candidate):
+                    if candidate != self.DEVICENAME:
+                        print(
+                            f"DYNAMIXEL device moved from {self.DEVICENAME} to {candidate}; "
+                            "using the new device."
+                        )
+                        self.DEVICENAME = candidate
+                        self.portHandler = PortHandler(self.DEVICENAME)
+                        self._reset_sync_handlers()
+                    return True
+
+            if not wait_for_device or time.time() >= deadline:
+                break
+
+            print(
+                f"Waiting for DYNAMIXEL USB device to reappear "
+                f"({self.DEVICENAME} missing)..."
+            )
+            time.sleep(self.DEVICE_REAPPEAR_POLL_SECONDS)
         return False
 
     def isDevicePresent(self):
@@ -352,7 +365,7 @@ class MotorsSynced:
         return self.setMotorSpeed()
 
     def _reopen_port(self):
-        if not self._refresh_device_name():
+        if not self._refresh_device_name(wait_for_device=True):
             print(
                 f"Motor recovery failed: no DYNAMIXEL USB device found for {self.DEVICENAME}."
             )
@@ -428,7 +441,7 @@ class MotorsSynced:
             print(f"Motor recovery already running; skipping nested recovery during {context}.")
             return False
 
-        if not self._refresh_device_name():
+        if not self._refresh_device_name(wait_for_device=True):
             print(
                 f"Motor recovery aborted: DYNAMIXEL device {self.DEVICENAME} is not present. "
                 "Check USB connection or update SNAKE_DXL_DEVICE."
