@@ -4,7 +4,6 @@ import numpy as np
 import motorssynced
 import optitrack
 import threading
-import math
 import random
 import matplotlib.pyplot as plt
 import time
@@ -16,7 +15,7 @@ import sys
 import copy
 from collections import deque
 from datetime import datetime
-from adaptive_gait_utils import action_delta_mean_and_penalty
+from adaptive_training_utils import action_delta_mean_and_penalty
 
 gymnasium.envs.register(
     id = "SnakeRobot",
@@ -54,13 +53,14 @@ class SnakeEnv(gymnasium.Env):
     '''
        Robot has 7 motors and 8 snake segments
        Action Space: 7
-       Observation Space: 4 normalized motion features + 7 normalized motors + 6 continuous scale-design features
+       Observation Space: 4 normalized motion features + 7 normalized motors
+       + 7 previous actions + 6 continuous scale-design features
     '''
 
     # setting up design framework
     # Continuous scale-parameter design. The physical layout is fixed to an
     # alternating A/B pattern: A on modules 1,3,5,7 and B on modules 2,4,6,8.
-    scale_design_schema_version = 4
+    scale_design_schema_version = 5
     scale_module_length = 60.0
     scales_per_module = 7
     scale_pitch = scale_module_length / scales_per_module
@@ -125,8 +125,7 @@ class SnakeEnv(gymnasium.Env):
         f"PrevAction{i + 1}"
         for i in range(motor_count)
     ]
-    gait_phase_feature_names = ["GaitPhaseSin", "GaitPhaseCos"]
-    base_feature_dim = 4 + motor_count + motor_count + len(gait_phase_feature_names)
+    base_feature_dim = 4 + motor_count + motor_count
     design_dims = list(range(base_feature_dim, base_feature_dim + len(config_numpy)))
     print('design dimensions!', design_dims)
     
@@ -173,13 +172,11 @@ class SnakeEnv(gymnasium.Env):
         self.terminal_reward_bonus = 5.0
         self.reward_clip_min = -3.0
         self.reward_clip_max = 6.0
-        self.gait_period_steps = max(1, int(os.getenv('SNAKE_GAIT_PERIOD_STEPS', '16')))
         self.action_delta_penalty_scale = max(
             0.0,
             float(os.getenv('SNAKE_ACTION_DELTA_PENALTY_SCALE', '0.0')),
         )
         self.prev_normalized_action = None
-        self.gait_step = 0
         self._interactive_reset_default = self._read_interactive_reset_default()
         self._auto_motor_reset_default = self._read_bool_env(
             'SNAKE_AUTO_MOTOR_RESET',
@@ -365,10 +362,6 @@ class SnakeEnv(gymnasium.Env):
         no_progress_penalty = float(normalized_deficit * self.no_progress_penalty_max)
         return window_progress_cm, no_progress_penalty
 
-    def _gait_phase_features(self):
-        phase = 2.0 * math.pi * ((int(self.gait_step) % self.gait_period_steps) / self.gait_period_steps)
-        return np.asarray([math.sin(phase), math.cos(phase)], dtype=np.float32)
-
     def _previous_action_features(self):
         if self.prev_normalized_action is None:
             return np.zeros(SnakeEnv.motor_count, dtype=np.float32)
@@ -414,7 +407,6 @@ class SnakeEnv(gymnasium.Env):
             np.array([x_drift_norm, z_progress_norm, z_remaining_norm, heading_norm], dtype=np.float32),
             motor_positions_norm.astype(np.float32),
             self._previous_action_features(),
-            self._gait_phase_features(),
             SnakeEnv.config_numpy.astype(np.float32),
         ])
         return observation
@@ -551,7 +543,6 @@ class SnakeEnv(gymnasium.Env):
         print(f"Reward: {reward}")
 
         self.prev_normalized_action = normalized_action.copy()
-        self.gait_step += 1
         observation = self._build_policy_observation(tmp_pos)
 
         # Log data
@@ -666,7 +657,6 @@ class SnakeEnv(gymnasium.Env):
         self.filtered_distance_window.append(float(self.prev_filtered_distance_to_goal))
         self._prev_raw_obs = copy.deepcopy(raw_observation)
         self.prev_normalized_action = None
-        self.gait_step = 0
 
         observation = self._build_policy_observation(raw_observation)
         print('Observation: ', observation)
@@ -952,7 +942,6 @@ class SnakeEnv(gymnasium.Env):
             'Heading_Norm',
             *motor_labels,
             *SnakeEnv.previous_action_feature_names,
-            *SnakeEnv.gait_phase_feature_names,
             *SnakeEnv.get_design_feature_labels(),
         ]
 

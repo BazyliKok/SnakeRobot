@@ -10,7 +10,7 @@ CODE = ROOT / "CoadaptationCode"
 if str(CODE) not in sys.path:
     sys.path.insert(0, str(CODE))
 
-from adaptive_gait_utils import (
+from adaptive_training_utils import (
     action_delta_mean_and_penalty,
     deterministic_rollout_probability_for_episode,
     episode_replay_score,

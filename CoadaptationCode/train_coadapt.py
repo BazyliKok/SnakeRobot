@@ -23,7 +23,7 @@ import rlkit.torch.pytorch_util as ptu
 import rlkit.torch.networks as rlkit_networks
 from motorssynced import MotorsSynced
 from collections import Counter
-from adaptive_gait_utils import (
+from adaptive_training_utils import (
     deterministic_rollout_probability_for_episode,
     episode_replay_score,
     scheduled_target_entropy_for_episode,
@@ -2220,7 +2220,6 @@ class Train():
             'repeat_action_eps': self.repeat_action_eps,
             'repeat_action_perturb_std': self.repeat_action_perturb_std,
             'action_smoothing_beta': self.action_smoothing_beta,
-            'gait_period_steps': getattr(self.env, 'gait_period_steps', None),
             'action_delta_penalty_scale': getattr(self.env, 'action_delta_penalty_scale', None),
             'max_motor_fault_step_retries': self.max_motor_fault_step_retries,
             'motor_fault_step_retry_delay_s': self.motor_fault_step_retry_delay_s,
@@ -2613,14 +2612,6 @@ class Train():
                     0.95,
                 )
             )
-            if hasattr(self.env, 'gait_period_steps'):
-                self.env.gait_period_steps = max(
-                    1,
-                    int(os.getenv(
-                        'SNAKE_GAIT_PERIOD_STEPS',
-                        metadata.get('gait_period_steps', self.env.gait_period_steps),
-                    )),
-                )
             if hasattr(self.env, 'action_delta_penalty_scale'):
                 self.env.action_delta_penalty_scale = max(
                     0.0,
