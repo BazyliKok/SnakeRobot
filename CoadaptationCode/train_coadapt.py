@@ -1262,17 +1262,17 @@ class Train():
         self.logTrainLoss() # log data
         self.episode_counter += 1
 
+        print(f'episode counter at: {self.episode_counter}')
+
+        self.save_networks()
+        return True
+
     def _append_loss_diagnostics(self, target, diagnostics, row_count):
         for key in self.LOSS_DIAGNOSTIC_KEYS:
             value = np.nan
             if diagnostics and key in diagnostics:
                 value = diagnostics[key]
             target[key].extend([value] * row_count)
-
-        print(f'episode counter at: {self.episode_counter}')
-
-        self.save_networks()
-        return True
       
 
     def initial_design_loop(self):
