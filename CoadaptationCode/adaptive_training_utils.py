@@ -41,5 +41,30 @@ def action_delta_mean_and_penalty(action, previous_action, penalty_scale):
     return action_delta_mean, float(max(0.0, penalty_scale) * action_delta_mean)
 
 
-def episode_replay_score(mean_reward, positive_reward_fraction, mean_action_delta, action_delta_weight=0.0):
-    return float(mean_reward + positive_reward_fraction - (action_delta_weight * mean_action_delta))
+def normalized_episode_progress_score(episode_progress_cm, progress_scale_cm=25.0):
+    progress_scale_cm = max(float(progress_scale_cm), 1e-6)
+    return float(np.clip(float(episode_progress_cm) / progress_scale_cm, -1.0, 1.0))
+
+
+def episode_replay_score(
+        mean_reward,
+        positive_reward_fraction,
+        mean_action_delta,
+        *,
+        episode_progress_cm=0.0,
+        progress_scale_cm=25.0,
+        progress_weight=1.0,
+        positive_reward_weight=0.5,
+        mean_reward_weight=0.25,
+        action_delta_weight=0.0,
+):
+    progress_score = normalized_episode_progress_score(
+        episode_progress_cm,
+        progress_scale_cm,
+    )
+    return float(
+        (float(progress_weight) * progress_score)
+        + (float(positive_reward_weight) * float(positive_reward_fraction))
+        + (float(mean_reward_weight) * float(mean_reward))
+        - (float(action_delta_weight) * float(mean_action_delta))
+    )

@@ -26,6 +26,7 @@ from collections import Counter
 from adaptive_training_utils import (
     deterministic_rollout_probability_for_episode,
     episode_replay_score,
+    normalized_episode_progress_score,
     scheduled_target_entropy_for_episode,
 )
 
@@ -165,6 +166,22 @@ class Train():
         self.episode_score_action_delta_weight = max(
             0.0,
             float(os.getenv('SNAKE_EPISODE_SCORE_ACTION_DELTA_WEIGHT', '0.0')),
+        )
+        self.episode_score_progress_scale_cm = max(
+            1e-6,
+            float(os.getenv('SNAKE_EPISODE_SCORE_PROGRESS_SCALE_CM', '25.0')),
+        )
+        self.episode_score_progress_weight = max(
+            0.0,
+            float(os.getenv('SNAKE_EPISODE_SCORE_PROGRESS_WEIGHT', '1.0')),
+        )
+        self.episode_score_positive_reward_weight = max(
+            0.0,
+            float(os.getenv('SNAKE_EPISODE_SCORE_POSITIVE_REWARD_WEIGHT', '0.5')),
+        )
+        self.episode_score_mean_reward_weight = max(
+            0.0,
+            float(os.getenv('SNAKE_EPISODE_SCORE_MEAN_REWARD_WEIGHT', '0.25')),
         )
         self.promote_best_policy_to_population = self._read_bool_env(
             'SNAKE_PROMOTE_BEST_POLICY_TO_POPULATION',
@@ -1320,10 +1337,19 @@ class Train():
             if progress_values.size > 0 else 0.0
         )
         episode_score = episode_replay_score(
-            mean_reward,
-            positive_reward_fraction,
-            mean_action_delta,
-            self.episode_score_action_delta_weight,
+            mean_reward=mean_reward,
+            positive_reward_fraction=positive_reward_fraction,
+            mean_action_delta=mean_action_delta,
+            episode_progress_cm=episode_progress_cm,
+            progress_scale_cm=self.episode_score_progress_scale_cm,
+            progress_weight=self.episode_score_progress_weight,
+            positive_reward_weight=self.episode_score_positive_reward_weight,
+            mean_reward_weight=self.episode_score_mean_reward_weight,
+            action_delta_weight=self.episode_score_action_delta_weight,
+        )
+        progress_score = normalized_episode_progress_score(
+            episode_progress_cm,
+            self.episode_score_progress_scale_cm,
         )
         env_info = {
             'terrain_id': terrain_idx,
@@ -1337,8 +1363,10 @@ class Train():
         print(
             "episode replay score -> "
             f"return: {episode_return:.4f}, progress_cm: {episode_progress_cm:.4f}, "
+            f"progress_score: {progress_score:.4f}, "
             f"positive_reward_fraction: {positive_reward_fraction:.3f}, "
-            f"mean_action_delta: {mean_action_delta:.4f}, score: {episode_score:.4f}"
+            f"mean_reward: {mean_reward:.4f}, mean_action_delta: {mean_action_delta:.4f}, "
+            f"score: {episode_score:.4f}"
         )
 
         for transition in transitions:
@@ -2213,6 +2241,10 @@ class Train():
             'target_entropy_anneal_episodes': self.target_entropy_anneal_episodes,
             'deterministic_eval_every_episodes': self.deterministic_eval_every_episodes,
             'episode_score_action_delta_weight': self.episode_score_action_delta_weight,
+            'episode_score_progress_scale_cm': self.episode_score_progress_scale_cm,
+            'episode_score_progress_weight': self.episode_score_progress_weight,
+            'episode_score_positive_reward_weight': self.episode_score_positive_reward_weight,
+            'episode_score_mean_reward_weight': self.episode_score_mean_reward_weight,
             'promote_best_policy_to_population': self.promote_best_policy_to_population,
             'population_training_start_design': self.population_training_start_design,
             'terrain_prefill_episodes': self.terrain_prefill_episodes,
@@ -2508,6 +2540,30 @@ class Train():
                     self.episode_score_action_delta_weight,
                 )
             )
+            default_episode_score_progress_scale_cm = str(
+                metadata.get(
+                    'episode_score_progress_scale_cm',
+                    self.episode_score_progress_scale_cm,
+                )
+            )
+            default_episode_score_progress_weight = str(
+                metadata.get(
+                    'episode_score_progress_weight',
+                    self.episode_score_progress_weight,
+                )
+            )
+            default_episode_score_positive_reward_weight = str(
+                metadata.get(
+                    'episode_score_positive_reward_weight',
+                    self.episode_score_positive_reward_weight,
+                )
+            )
+            default_episode_score_mean_reward_weight = str(
+                metadata.get(
+                    'episode_score_mean_reward_weight',
+                    self.episode_score_mean_reward_weight,
+                )
+            )
             self.population_training_start_design = int(
                 os.getenv('SNAKE_POP_TRAIN_START_DESIGN', default_pop_train_start_design)
             )
@@ -2583,6 +2639,42 @@ class Train():
                     os.getenv(
                         'SNAKE_EPISODE_SCORE_ACTION_DELTA_WEIGHT',
                         default_episode_score_action_delta_weight,
+                    )
+                ),
+            )
+            self.episode_score_progress_scale_cm = max(
+                1e-6,
+                float(
+                    os.getenv(
+                        'SNAKE_EPISODE_SCORE_PROGRESS_SCALE_CM',
+                        default_episode_score_progress_scale_cm,
+                    )
+                ),
+            )
+            self.episode_score_progress_weight = max(
+                0.0,
+                float(
+                    os.getenv(
+                        'SNAKE_EPISODE_SCORE_PROGRESS_WEIGHT',
+                        default_episode_score_progress_weight,
+                    )
+                ),
+            )
+            self.episode_score_positive_reward_weight = max(
+                0.0,
+                float(
+                    os.getenv(
+                        'SNAKE_EPISODE_SCORE_POSITIVE_REWARD_WEIGHT',
+                        default_episode_score_positive_reward_weight,
+                    )
+                ),
+            )
+            self.episode_score_mean_reward_weight = max(
+                0.0,
+                float(
+                    os.getenv(
+                        'SNAKE_EPISODE_SCORE_MEAN_REWARD_WEIGHT',
+                        default_episode_score_mean_reward_weight,
                     )
                 ),
             )
@@ -2704,7 +2796,9 @@ class Train():
                 f"ind_replay_epochs: {self.rl_alg._ind_replay_epochs_per_update:.2f}, "
                 f"deterministic rollout start/ramp: "
                 f"{self.deterministic_rollout_start_episode}/{self.deterministic_rollout_ramp_episodes}, "
-                f"target entropy start/end: {self.target_entropy_start:.2f}/{self.target_entropy_end:.2f}"
+                f"target entropy start/end: {self.target_entropy_start:.2f}/{self.target_entropy_end:.2f}, "
+                f"episode score progress scale/weight: "
+                f"{self.episode_score_progress_scale_cm:.2f}/{self.episode_score_progress_weight:.2f}"
             )
         else:
             raise FileNotFoundError(
