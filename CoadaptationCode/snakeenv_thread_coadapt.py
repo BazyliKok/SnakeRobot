@@ -16,6 +16,7 @@ import sys
 import copy
 from collections import deque
 from datetime import datetime
+from adaptive_gait_utils import action_delta_mean_and_penalty
 
 gymnasium.envs.register(
     id = "SnakeRobot",
@@ -59,7 +60,7 @@ class SnakeEnv(gymnasium.Env):
     # setting up design framework
     # Continuous scale-parameter design. The physical layout is fixed to an
     # alternating A/B pattern: A on modules 1,3,5,7 and B on modules 2,4,6,8.
-    scale_design_schema_version = 3
+    scale_design_schema_version = 4
     scale_module_length = 60.0
     scales_per_module = 7
     scale_pitch = scale_module_length / scales_per_module
@@ -119,7 +120,13 @@ class SnakeEnv(gymnasium.Env):
 
     design_slot_names = [f'Module{i + 1}' for i in range(design_slot_count)]
     config_numpy = np.asarray([-0.2, -1.0, -0.2, -1.0, 0.0, 0.0], dtype=np.float32)
-    base_feature_dim = 11
+    motor_count = 7
+    previous_action_feature_names = [
+        f"PrevAction{i + 1}"
+        for i in range(motor_count)
+    ]
+    gait_phase_feature_names = ["GaitPhaseSin", "GaitPhaseCos"]
+    base_feature_dim = 4 + motor_count + motor_count + len(gait_phase_feature_names)
     design_dims = list(range(base_feature_dim, base_feature_dim + len(config_numpy)))
     print('design dimensions!', design_dims)
     
@@ -137,7 +144,7 @@ class SnakeEnv(gymnasium.Env):
             shape=(obs_dim,),
             dtype='float32'
         )
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(7,), dtype='float32')  # normalized actions
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(SnakeEnv.motor_count,), dtype='float32')  # normalized actions
 
         # OptiTrack stream is in meters; this env scales position by *100.
         # Targeting is Z-based for termination/reward.
@@ -166,6 +173,13 @@ class SnakeEnv(gymnasium.Env):
         self.terminal_reward_bonus = 5.0
         self.reward_clip_min = -3.0
         self.reward_clip_max = 6.0
+        self.gait_period_steps = max(1, int(os.getenv('SNAKE_GAIT_PERIOD_STEPS', '16')))
+        self.action_delta_penalty_scale = max(
+            0.0,
+            float(os.getenv('SNAKE_ACTION_DELTA_PENALTY_SCALE', '0.0')),
+        )
+        self.prev_normalized_action = None
+        self.gait_step = 0
         self._interactive_reset_default = self._read_interactive_reset_default()
         self._auto_motor_reset_default = self._read_bool_env(
             'SNAKE_AUTO_MOTOR_RESET',
@@ -351,6 +365,31 @@ class SnakeEnv(gymnasium.Env):
         no_progress_penalty = float(normalized_deficit * self.no_progress_penalty_max)
         return window_progress_cm, no_progress_penalty
 
+    def _gait_phase_features(self):
+        phase = 2.0 * math.pi * ((int(self.gait_step) % self.gait_period_steps) / self.gait_period_steps)
+        return np.asarray([math.sin(phase), math.cos(phase)], dtype=np.float32)
+
+    def _previous_action_features(self):
+        if self.prev_normalized_action is None:
+            return np.zeros(SnakeEnv.motor_count, dtype=np.float32)
+        return np.clip(
+            np.asarray(self.prev_normalized_action, dtype=np.float32).reshape(-1)[:SnakeEnv.motor_count],
+            -1.0,
+            1.0,
+        )
+
+    def _compute_action_delta_penalty(self, action):
+        action = np.clip(
+            np.asarray(action, dtype=np.float32).reshape(-1)[:SnakeEnv.motor_count],
+            -1.0,
+            1.0,
+        )
+        return action_delta_mean_and_penalty(
+            action,
+            None if self.prev_normalized_action is None else self._previous_action_features(),
+            self.action_delta_penalty_scale,
+        )
+
     def _build_policy_observation(self, raw_observation):
         raw_observation = np.asarray(raw_observation, dtype=np.float32)
 
@@ -374,6 +413,8 @@ class SnakeEnv(gymnasium.Env):
         observation = np.concatenate([
             np.array([x_drift_norm, z_progress_norm, z_remaining_norm, heading_norm], dtype=np.float32),
             motor_positions_norm.astype(np.float32),
+            self._previous_action_features(),
+            self._gait_phase_features(),
             SnakeEnv.config_numpy.astype(np.float32),
         ])
         return observation
@@ -381,10 +422,18 @@ class SnakeEnv(gymnasium.Env):
     def step(self, action):
 
         num_timesteps = 1  
-        assert len(action) == 7 * num_timesteps, f"Action space must now be {7 * num_timesteps} values ({7} motors x {num_timesteps} timesteps)."
+        assert len(action) == SnakeEnv.motor_count * num_timesteps, (
+            f"Action space must now be {SnakeEnv.motor_count * num_timesteps} values "
+            f"({SnakeEnv.motor_count} motors x {num_timesteps} timesteps)."
+        )
+        normalized_action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
+        action_delta_mean, action_delta_penalty = self._compute_action_delta_penalty(normalized_action)
 
         # Split action into multiple consecutive timesteps
-        actions = [action[i * 7: (i + 1) * 7] for i in range(num_timesteps)]
+        actions = [
+            normalized_action[i * SnakeEnv.motor_count: (i + 1) * SnakeEnv.motor_count]
+            for i in range(num_timesteps)
+        ]
 
         for sub_action in actions:
             actionForMotors = self.denormalizeAction(sub_action)
@@ -456,6 +505,7 @@ class SnakeEnv(gymnasium.Env):
             - living_penalty
             - no_progress_penalty
             - backward_penalty
+            - action_delta_penalty
             - (self.x_drift_penalty_scale * x_drift_penalty)
             - (self.heading_penalty_scale * heading_penalty)
         )
@@ -471,7 +521,8 @@ class SnakeEnv(gymnasium.Env):
             f"curr_filtered_distance_to_goal: {curr_filtered_distance_to_goal:.4f}, "
             f"x_drift_cm: {x_drift:.4f}, x_drift_penalty: {x_drift_penalty:.4f}, "
             f"filtered_heading_penalty: {heading_penalty:.4f}, living_penalty: {living_penalty:.4f}, "
-            f"no_progress_penalty: {no_progress_penalty:.4f}"
+            f"no_progress_penalty: {no_progress_penalty:.4f}, "
+            f"action_delta_mean: {action_delta_mean:.4f}, action_delta_penalty: {action_delta_penalty:.4f}"
         )
 
         truncated = False
@@ -488,6 +539,8 @@ class SnakeEnv(gymnasium.Env):
             'heading_penalty': heading_penalty,
             'living_penalty': living_penalty,
             'no_progress_penalty': no_progress_penalty,
+            'action_delta_mean': action_delta_mean,
+            'action_delta_penalty': action_delta_penalty,
             'backward_penalty': backward_penalty,
             'stagnation_penalty': no_progress_penalty,
             'prev_distance_to_goal': prev_distance_to_goal,
@@ -497,6 +550,8 @@ class SnakeEnv(gymnasium.Env):
 
         print(f"Reward: {reward}")
 
+        self.prev_normalized_action = normalized_action.copy()
+        self.gait_step += 1
         observation = self._build_policy_observation(tmp_pos)
 
         # Log data
@@ -610,6 +665,8 @@ class SnakeEnv(gymnasium.Env):
         self.filtered_distance_window.clear()
         self.filtered_distance_window.append(float(self.prev_filtered_distance_to_goal))
         self._prev_raw_obs = copy.deepcopy(raw_observation)
+        self.prev_normalized_action = None
+        self.gait_step = 0
 
         observation = self._build_policy_observation(raw_observation)
         print('Observation: ', observation)
@@ -894,6 +951,8 @@ class SnakeEnv(gymnasium.Env):
             'Z_Remaining_Norm',
             'Heading_Norm',
             *motor_labels,
+            *SnakeEnv.previous_action_feature_names,
+            *SnakeEnv.gait_phase_feature_names,
             *SnakeEnv.get_design_feature_labels(),
         ]
 

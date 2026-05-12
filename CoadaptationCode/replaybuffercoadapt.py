@@ -16,11 +16,20 @@ class CoadaptReplayBuffer(ReplayBuffer):
         self._max_replay_buffer_size_species = max_replay_buffer_size_species
         self._max_replay_buffer_size_population = max_replay_buffer_size_population
         
+        default_env_info_sizes = {
+            'terrain_id': 1,
+            'episode_return': 1,
+            'episode_progress_cm': 1,
+            'episode_positive_reward_fraction': 1,
+            'episode_mean_action_delta': 1,
+            'episode_score': 1,
+        }
         if env_info_sizes is None:
-            env_info_sizes = {'terrain_id': 1}
-        elif 'terrain_id' not in env_info_sizes:
+            env_info_sizes = default_env_info_sizes
+        else:
             env_info_sizes = dict(env_info_sizes)
-            env_info_sizes['terrain_id'] = 1
+            for key, size in default_env_info_sizes.items():
+                env_info_sizes.setdefault(key, size)
 
         self._env_info_sizes = env_info_sizes
         self._individual_batch_fraction = float(
@@ -30,6 +39,19 @@ class CoadaptReplayBuffer(ReplayBuffer):
                 1.0,
             )
         )
+        self._reward_biased_batch_fraction = float(
+            np.clip(
+                float(os.getenv('SNAKE_REWARD_BIASED_BATCH_FRACTION', '0.6')),
+                0.0,
+                1.0,
+            )
+        )
+        self._reward_bias_temperature = max(
+            1e-6,
+            float(os.getenv('SNAKE_REWARD_BIAS_TEMPERATURE', '0.5')),
+        )
+        self._reward_bias_step_weight = float(os.getenv('SNAKE_REWARD_BIAS_STEP_WEIGHT', '1.0'))
+        self._reward_bias_episode_weight = float(os.getenv('SNAKE_REWARD_BIAS_EPISODE_WEIGHT', '1.0'))
         self._active_terrain_ids = None
 
         # default mode 
@@ -99,8 +121,34 @@ class CoadaptReplayBuffer(ReplayBuffer):
         buffer._env = env
         if not hasattr(buffer, '_active_terrain_ids'):
             buffer._active_terrain_ids = None
+        if not hasattr(buffer, '_reward_biased_batch_fraction'):
+            buffer._reward_biased_batch_fraction = 0.6
+        if not hasattr(buffer, '_reward_bias_temperature'):
+            buffer._reward_bias_temperature = 0.5
+        if not hasattr(buffer, '_reward_bias_step_weight'):
+            buffer._reward_bias_step_weight = 1.0
+        if not hasattr(buffer, '_reward_bias_episode_weight'):
+            buffer._reward_bias_episode_weight = 1.0
         print(f"replay buffer loaded from {filepath}")
         return buffer
+
+    def configure_sampling(
+            self,
+            reward_biased_batch_fraction=None,
+            reward_bias_temperature=None,
+            reward_bias_step_weight=None,
+            reward_bias_episode_weight=None,
+    ):
+        if reward_biased_batch_fraction is not None:
+            self._reward_biased_batch_fraction = float(
+                np.clip(float(reward_biased_batch_fraction), 0.0, 1.0)
+            )
+        if reward_bias_temperature is not None:
+            self._reward_bias_temperature = max(1e-6, float(reward_bias_temperature))
+        if reward_bias_step_weight is not None:
+            self._reward_bias_step_weight = float(reward_bias_step_weight)
+        if reward_bias_episode_weight is not None:
+            self._reward_bias_episode_weight = float(reward_bias_episode_weight)
 
     def set_active_terrain_ids(self, terrain_ids):
         if terrain_ids is None:
@@ -117,6 +165,11 @@ class CoadaptReplayBuffer(ReplayBuffer):
         terrain_id = int(env_info.get('terrain_id', -1))
         env_info = dict(env_info)
         env_info['terrain_id'] = np.array([terrain_id], dtype=np.float32)
+        for key in self._env_info_sizes:
+            if key == 'terrain_id':
+                continue
+            env_info.setdefault(key, np.zeros(self._env_info_sizes[key], dtype=np.float32))
+            env_info[key] = np.asarray(env_info[key], dtype=np.float32).reshape(-1)[:self._env_info_sizes[key]]
 
         self._individual_buffer.add_sample(observation=observation, action=action, reward=reward, terminal=terminal, next_observation=next_observation, env_info=env_info, **kwargs)
         self._population_buffer.add_sample(observation=observation, action=action, reward=reward, terminal=terminal, next_observation=next_observation, env_info=env_info, **kwargs)
@@ -138,6 +191,56 @@ class CoadaptReplayBuffer(ReplayBuffer):
         for key in buffer._env_info_keys:
             batch[key] = buffer._env_infos[key][indices]
         return batch
+
+    def _sample_candidate_indices(self, buffer, candidate, batch_size):
+        candidate = np.asarray(candidate, dtype=np.int64)
+        if len(candidate) == 0:
+            return candidate
+
+        biased_count = int(round(batch_size * self._reward_biased_batch_fraction))
+        biased_count = min(max(biased_count, 0), batch_size)
+        uniform_count = batch_size - biased_count
+
+        sampled_parts = []
+        if biased_count > 0:
+            scores = (
+                self._reward_bias_step_weight
+                * buffer._rewards[candidate].reshape(-1).astype(np.float64)
+            )
+            if 'episode_score' in buffer._env_info_keys:
+                scores = scores + (
+                    self._reward_bias_episode_weight
+                    * buffer._env_infos['episode_score'][candidate].reshape(-1).astype(np.float64)
+                )
+            logits = (scores - np.max(scores)) / self._reward_bias_temperature
+            logits = np.clip(logits, -50.0, 0.0)
+            weights = np.exp(logits)
+            weight_sum = np.sum(weights)
+            if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+                probabilities = None
+            else:
+                probabilities = weights / weight_sum
+            sampled_parts.append(
+                np.random.choice(
+                    candidate,
+                    size=biased_count,
+                    replace=len(candidate) < biased_count,
+                    p=probabilities,
+                )
+            )
+
+        if uniform_count > 0:
+            sampled_parts.append(
+                np.random.choice(
+                    candidate,
+                    size=uniform_count,
+                    replace=len(candidate) < uniform_count,
+                )
+            )
+
+        sampled = np.concatenate(sampled_parts) if sampled_parts else np.array([], dtype=np.int64)
+        np.random.shuffle(sampled)
+        return sampled
 
     def _balanced_random_batch(self, buffer, batch_size):
         if buffer._size <= 0:
@@ -179,8 +282,7 @@ class CoadaptReplayBuffer(ReplayBuffer):
             candidate = np.where(active_mask & (terrain_ids == terrain_id))[0]
             if len(candidate) == 0:
                 continue
-            replace = len(candidate) < n_take
-            sampled = np.random.choice(candidate, size=n_take, replace=replace)
+            sampled = self._sample_candidate_indices(buffer, candidate, n_take)
             sampled_indices.append(sampled)
 
         if not sampled_indices:
@@ -192,7 +294,7 @@ class CoadaptReplayBuffer(ReplayBuffer):
         if len(indices) < batch_size:
             # Top up from active terrains only to preserve the requested batch size.
             extra_needed = batch_size - len(indices)
-            extra = np.random.choice(eligible_indices, size=extra_needed, replace=len(eligible_indices) < extra_needed)
+            extra = self._sample_candidate_indices(buffer, eligible_indices, extra_needed)
             indices = np.concatenate([indices, extra], axis=0)
 
         np.random.shuffle(indices)
@@ -210,8 +312,7 @@ class CoadaptReplayBuffer(ReplayBuffer):
         if len(candidate) == 0:
             return self._balanced_random_batch(buffer, batch_size)
 
-        replace = len(candidate) < batch_size
-        indices = np.random.choice(candidate, size=batch_size, replace=replace)
+        indices = self._sample_candidate_indices(buffer, candidate, batch_size)
         return self._random_batch_from_indices(buffer, indices)
 
     def random_start_batch_for_terrain(self, batch_size, terrain_id):

@@ -49,6 +49,14 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         self._batch_size = int(os.getenv('SNAKE_SAC_BATCH_SIZE', '32'))
         self._nmbr_ind_updates = int(os.getenv('SNAKE_IND_UPDATES', '40'))
         self._nmbr_pop_updates = int(os.getenv('SNAKE_POP_UPDATES', '8'))
+        self._ind_replay_epochs_per_update = max(
+            1.0,
+            float(os.getenv('SNAKE_IND_REPLAY_EPOCHS_PER_UPDATE', '2.0')),
+        )
+        self._pop_replay_epochs_per_update = max(
+            1.0,
+            float(os.getenv('SNAKE_POP_REPLAY_EPOCHS_PER_UPDATE', '1.0')),
+        )
         ind_policy_lr = float(os.getenv('SNAKE_IND_POLICY_LR', '3e-4'))
         ind_qf_lr = float(os.getenv('SNAKE_IND_QF_LR', '5e-4'))
         pop_policy_lr = float(os.getenv('SNAKE_POP_POLICY_LR', '1e-4'))
@@ -99,6 +107,13 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         self.last_pop_diagnostics = {}
         
 
+    def set_target_entropy(self, target_entropy):
+        if hasattr(self._ind_algorithm, 'set_target_entropy'):
+            self._ind_algorithm.set_target_entropy(target_entropy)
+        if hasattr(self._pop_algorithm, 'set_target_entropy'):
+            self._pop_algorithm.set_target_entropy(target_entropy)
+        self._ind_sac_trainer_kwargs['target_entropy'] = float(target_entropy)
+        self._pop_sac_trainer_kwargs['target_entropy'] = float(target_entropy)
     
     def episode_init(self, copy_population_to_individual=True):
            
@@ -156,7 +171,14 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             ind_steps_can_sample = self._replay.num_steps_can_sample()
             ind_updates = min(
                 self._nmbr_ind_updates,
-                max(1, int(np.ceil(ind_steps_can_sample / self._batch_size)))
+                max(
+                    1,
+                    int(np.ceil(
+                        self._ind_replay_epochs_per_update
+                        * ind_steps_can_sample
+                        / self._batch_size
+                    )),
+                )
             )
             print(f'individual SAC updates: {ind_updates} from {ind_steps_can_sample} replay steps')
             self._ind_algorithm.start_diagnostics_epoch()
@@ -178,7 +200,14 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             pop_steps_can_sample = self._replay.num_steps_can_sample()
             pop_updates = min(
                 self._nmbr_pop_updates,
-                max(1, int(np.ceil(pop_steps_can_sample / self._batch_size)))
+                max(
+                    1,
+                    int(np.ceil(
+                        self._pop_replay_epochs_per_update
+                        * pop_steps_can_sample
+                        / self._batch_size
+                    )),
+                )
             )
             print(f'population SAC updates: {pop_updates} from {pop_steps_can_sample} replay steps')
             self._pop_algorithm.start_diagnostics_epoch()

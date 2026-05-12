@@ -51,7 +51,7 @@ class SACTrainer(TorchTrainer):
 
         self.use_automatic_entropy_tuning = use_automatic_entropy_tuning
         if self.use_automatic_entropy_tuning:
-            if target_entropy:
+            if target_entropy is not None:
                 self.target_entropy = target_entropy
             else:
                 self.target_entropy = -np.prod(self.env.action_space.shape).item()  # heuristic value from Tuomas
@@ -109,6 +109,7 @@ class SACTrainer(TorchTrainer):
                 ('Q2 TD Abs Mean', []),
                 ('Q1 TD Abs Max', []),
                 ('Q2 TD Abs Max', []),
+                ('Target Entropy', []),
             ]
         )
 
@@ -332,6 +333,7 @@ class SACTrainer(TorchTrainer):
         if self.use_automatic_entropy_tuning:
             self._record_diagnostic('Alpha', alpha.item())
             self._record_diagnostic('Alpha Loss', alpha_loss.item())
+            self._record_diagnostic('Target Entropy', float(self.target_entropy))
         self._refresh_eval_statistics(
             q1_pred=q1_pred,
             q2_pred=q2_pred,
@@ -344,6 +346,9 @@ class SACTrainer(TorchTrainer):
 
     def get_diagnostics(self):
         return self.eval_statistics
+
+    def set_target_entropy(self, target_entropy):
+        self.target_entropy = float(target_entropy)
 
     def end_epoch(self, epoch):
         self._reset_diagnostic_history()

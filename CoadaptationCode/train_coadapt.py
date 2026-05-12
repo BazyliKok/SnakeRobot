@@ -16,12 +16,18 @@ import utils
 import pickle
 import gc
 import random
+import copy
 from pso_batch import PSO_batch
 import time
 import rlkit.torch.pytorch_util as ptu
 import rlkit.torch.networks as rlkit_networks
 from motorssynced import MotorsSynced
 from collections import Counter
+from adaptive_gait_utils import (
+    deterministic_rollout_probability_for_episode,
+    episode_replay_score,
+    scheduled_target_entropy_for_episode,
+)
 
 from datetime import datetime
 
@@ -49,6 +55,7 @@ class Train():
         'Q1 TD Abs Max',
         'Q2 TD Abs Max',
         'Alpha',
+        'Target Entropy',
     ]
 
     def __init__(self):        
@@ -109,9 +116,10 @@ class Train():
 
         # Keep some exploration for fresh runs. The continuous scale-parameter
         # experiment intentionally starts from scratch by default.
-        default_action_noise_std = '0.02'
+        default_action_noise_std = '0.0'
         default_repeat_action_eps = '0.02'
-        default_repeat_action_perturb_std = '0.02'
+        default_repeat_action_perturb_std = '0.0'
+        default_action_smoothing_beta = '0.0'
         self.action_noise_std = max(
             0.0,
             float(os.getenv('SNAKE_ACTION_NOISE_STD', default_action_noise_std)),
@@ -124,9 +132,45 @@ class Train():
             0.0,
             float(os.getenv('SNAKE_REPEAT_ACTION_PERTURB_STD', default_repeat_action_perturb_std)),
         )
-        self.random_action_prob_start = 0.2
+        self.action_smoothing_beta = float(
+            np.clip(
+                float(os.getenv('SNAKE_ACTION_SMOOTHING_BETA', default_action_smoothing_beta)),
+                0.0,
+                0.95,
+            )
+        )
+        self.random_action_prob_start = 0.0
         self.random_action_prob_decay = 0.05
         self.random_action_prob_min = 0.0
+        self.deterministic_rollout_start_episode = max(
+            0,
+            int(os.getenv('SNAKE_DETERMINISTIC_ROLLOUT_START_EPISODE', '10')),
+        )
+        self.deterministic_rollout_ramp_episodes = max(
+            0,
+            int(os.getenv('SNAKE_DETERMINISTIC_ROLLOUT_RAMP_EPISODES', '20')),
+        )
+        self.target_entropy_start = float(os.getenv('SNAKE_TARGET_ENTROPY_START', '-7.0'))
+        self.target_entropy_end = float(os.getenv('SNAKE_TARGET_ENTROPY_END', '-2.0'))
+        self.target_entropy_anneal_episodes = max(
+            1,
+            int(os.getenv('SNAKE_TARGET_ENTROPY_ANNEAL_EPISODES', '30')),
+        )
+        self.deterministic_eval_every_episodes = max(
+            0,
+            int(os.getenv('SNAKE_DETERMINISTIC_EVAL_EVERY_EPISODES', '10')),
+        )
+        self.episode_score_action_delta_weight = max(
+            0.0,
+            float(os.getenv('SNAKE_EPISODE_SCORE_ACTION_DELTA_WEIGHT', '0.0')),
+        )
+        self.promote_best_policy_to_population = self._read_bool_env(
+            'SNAKE_PROMOTE_BEST_POLICY_TO_POPULATION',
+            default=True,
+        )
+        self.best_probe_scores = {}
+        self.best_probe_policy_states = {}
+        self.best_probe_metadata = {}
         default_pop_train_start_design = '0'
         default_terrain_prefill_episodes = '0'
         default_policy_warmup_episodes = str(self.policy_action_warmup_episodes)
@@ -245,6 +289,58 @@ class Train():
             self.random_action_prob_start - (self.random_action_prob_decay * episode_idx),
         )
 
+    @staticmethod
+    def deterministic_rollout_probability_for_episode(episode_in_block, start_episode=10, ramp_episodes=20):
+        return deterministic_rollout_probability_for_episode(
+            episode_in_block,
+            start_episode,
+            ramp_episodes,
+        )
+
+    def _deterministic_rollout_probability(self):
+        episode_idx = (
+            0 if self.current_training_episode_in_block is None
+            else int(self.current_training_episode_in_block)
+        )
+        return self.deterministic_rollout_probability_for_episode(
+            episode_idx,
+            self.deterministic_rollout_start_episode,
+            self.deterministic_rollout_ramp_episodes,
+        )
+
+    @staticmethod
+    def scheduled_target_entropy_for_episode(
+        episode_in_block,
+        start_entropy=-7.0,
+        end_entropy=-2.0,
+        anneal_episodes=30,
+    ):
+        return scheduled_target_entropy_for_episode(
+            episode_in_block,
+            start_entropy,
+            end_entropy,
+            anneal_episodes,
+        )
+
+    def _scheduled_target_entropy(self):
+        episode_idx = (
+            0 if self.current_training_episode_in_block is None
+            else int(self.current_training_episode_in_block)
+        )
+        return self.scheduled_target_entropy_for_episode(
+            episode_idx,
+            self.target_entropy_start,
+            self.target_entropy_end,
+            self.target_entropy_anneal_episodes,
+        )
+
+    def _policy_action(self, policy, state, deterministic=False):
+        try:
+            action, _ = policy.get_action(state, deterministic=bool(deterministic))
+        except TypeError:
+            action, _ = policy.get_action(state)
+        return action
+
     def _should_use_policy_actions(self):
         episode_idx = 0 if self.episode_counter is None else int(self.episode_counter)
         return episode_idx >= self.policy_action_warmup_episodes
@@ -316,19 +412,39 @@ class Train():
         self.livingPenaltyComponents = []
         self.noProgressPenaltyComponents = []
         self.backwardPenaltyComponents = []
+        self.actionDeltaMeanComponents = []
+        self.actionDeltaPenaltyComponents = []
 
     def _upsert_csv_rows(self, path, frame, key_columns):
         os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
         frame = frame.copy()
 
+        def normalized_keys(dataframe):
+            key_parts = []
+            for column in key_columns:
+                values = dataframe[column]
+                numeric_values = pd.to_numeric(values, errors='coerce')
+                integer_like = numeric_values.notna() & np.isclose(
+                    numeric_values,
+                    np.round(numeric_values),
+                )
+                normalized = values.astype(str)
+                normalized.loc[integer_like] = (
+                    np.round(numeric_values.loc[integer_like])
+                    .astype(np.int64)
+                    .astype(str)
+                )
+                key_parts.append(normalized)
+            return pd.concat(key_parts, axis=1).agg('||'.join, axis=1)
+
         if not os.path.isfile(path):
-            frame.to_csv(path, index=False)
+            frame.drop_duplicates().to_csv(path, index=False)
             return
 
         try:
             existing = pd.read_csv(path)
         except pd.errors.EmptyDataError:
-            frame.to_csv(path, index=False)
+            frame.drop_duplicates().to_csv(path, index=False)
             return
 
         for column in frame.columns:
@@ -339,12 +455,13 @@ class Train():
                 frame[column] = np.nan
 
         ordered_columns = list(existing.columns)
-        existing_keys = existing[key_columns].astype(str).agg('||'.join, axis=1)
-        incoming_keys = set(frame[key_columns].astype(str).agg('||'.join, axis=1))
+        existing_keys = normalized_keys(existing)
+        incoming_keys = set(normalized_keys(frame))
         if incoming_keys:
             existing = existing[~existing_keys.isin(incoming_keys)]
 
         updated = pd.concat([existing[ordered_columns], frame[ordered_columns]], ignore_index=True)
+        updated = updated.drop_duplicates()
         updated.to_csv(path, index=False)
 
     def _set_output_filenames(self):
@@ -353,6 +470,80 @@ class Train():
         self.filename = self.date+name
         name = "Losses_DesignCycle{}_{}".format(str(self.design_counter), self.results_tag)
         self.lossFilename = self.date+name
+
+    def _log_paths_for_dates(self, dates):
+        paths = []
+        for date in dates:
+            paths.append(f"{date}Rewards_DesignCycle{self.design_counter}_{self.results_tag}")
+            paths.append(f"{date}Losses_DesignCycle{self.design_counter}_{self.results_tag}")
+        return paths
+
+    def _prune_csv_at_resume_episode(self, path, resume_episode, max_trim_episodes):
+        if not os.path.isfile(path):
+            return
+
+        try:
+            frame = pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return
+
+        if 'Episode' not in frame.columns:
+            return
+
+        episodes = pd.to_numeric(frame['Episode'], errors='coerce')
+        keep_mask = episodes.isna() | (episodes < int(resume_episode))
+        removed_rows = int((~keep_mask).sum())
+        if removed_rows == 0:
+            return
+
+        removed_episode_count = int(episodes.loc[~keep_mask].dropna().nunique())
+        if removed_episode_count > int(max_trim_episodes):
+            print(
+                f"Skipping resume log trim for {path}: would trim "
+                f"{removed_episode_count} episodes, above safety limit "
+                f"{int(max_trim_episodes)}. Set SNAKE_RESUME_LOG_TRIM_MAX_EPISODES "
+                "higher only if this is intentional."
+            )
+            return
+
+        backup_path = f"{path}.before_resume_trim_ep{int(resume_episode)}.bak"
+        frame.to_csv(backup_path, index=False)
+
+        frame.loc[keep_mask].to_csv(path, index=False)
+        print(
+            f"Pruned {removed_rows} resumed-future log rows from {path} "
+            f"(kept episodes < {int(resume_episode)}; backup: {backup_path})."
+        )
+
+    def _prune_resume_logs(self, checkpoint_prefix):
+        if not self._read_bool_env('SNAKE_TRIM_RESUME_LOGS', default=False):
+            print(
+                "Resume log trimming is disabled. Existing later episodes stay in "
+                "the raw logs; new resumed rows will be written with a new Run_ID."
+            )
+            return
+        if self.episode_counter is None:
+            return
+
+        max_trim_episodes = max(
+            0,
+            int(os.getenv('SNAKE_RESUME_LOG_TRIM_MAX_EPISODES', '5')),
+        )
+        if max_trim_episodes == 0:
+            print("Resume log trimming skipped because max trim episodes is 0.")
+            return
+
+        checkpoint_date = str(checkpoint_prefix).split('_DesignCycle', 1)[0]
+        dates = {datetime.now().strftime("%Y_%m_%d"), self.date}
+        if checkpoint_date:
+            dates.add(checkpoint_date)
+
+        for path in self._log_paths_for_dates(sorted(dates)):
+            self._prune_csv_at_resume_episode(
+                path,
+                self.episode_counter,
+                max_trim_episodes,
+            )
 
     def _checkpoint_results_dir(self):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results_bazyli')
@@ -923,6 +1114,8 @@ class Train():
             self.livingPenaltyComponents = []
             self.noProgressPenaltyComponents = []
             self.backwardPenaltyComponents = []
+            self.actionDeltaMeanComponents = []
+            self.actionDeltaPenaltyComponents = []
 
             # reset environment
             terrain, terrain_idx, block_idx, episode_in_block = self._get_training_terrain_for_episode(self.episode_counter)
@@ -962,8 +1155,15 @@ class Train():
             episodeContRewards = []
             Done = False
             prev_action = None
+            episode_transitions = []
             random_action_prob = self._random_action_probability()
-            print(f'episode random action probability: {random_action_prob:.3f}')
+            deterministic_rollout_prob = self._deterministic_rollout_probability()
+            use_deterministic_rollout = np.random.rand() < deterministic_rollout_prob
+            print(
+                f'episode random action probability: {random_action_prob:.3f}; '
+                f'deterministic rollout probability: {deterministic_rollout_prob:.3f}; '
+                f'using deterministic rollout: {use_deterministic_rollout}'
+            )
         
             # get policies
             self.policy = self.rl_alg.get_policy_network(self.networks['individual']) #get policy here
@@ -990,14 +1190,29 @@ class Train():
                     and np.random.rand() > random_action_prob
                 )
                 if use_policy_action:
-                    action, _ = self.policy.get_action(state)
+                    action = self._policy_action(
+                        self.policy,
+                        state,
+                        deterministic=use_deterministic_rollout,
+                    )
                 else:
                     action = np.random.uniform(-1, 1, size=self._action_dim())
 
                 action = np.asarray(action, dtype=np.float32)
                 action += np.random.normal(0.0, self.action_noise_std, size=action.shape)
+                action = np.clip(action, -1.0, 1.0)
 
-                if prev_action is not None and np.max(np.abs(action - prev_action)) < self.repeat_action_eps:
+                if prev_action is not None and self.action_smoothing_beta > 0.0:
+                    action = (
+                        self.action_smoothing_beta * prev_action
+                        + (1.0 - self.action_smoothing_beta) * action
+                    )
+
+                if (
+                    prev_action is not None
+                    and self.repeat_action_perturb_std > 0.0
+                    and np.max(np.abs(action - prev_action)) < self.repeat_action_eps
+                ):
                     action += np.random.normal(0.0, self.repeat_action_perturb_std, size=action.shape)
 
                 action = np.clip(action, -1.0, 1.0)
@@ -1033,6 +1248,8 @@ class Train():
                 self.livingPenaltyComponents.append(float(info.get('living_penalty', np.nan)))
                 self.noProgressPenaltyComponents.append(float(info.get('no_progress_penalty', info.get('stagnation_penalty', np.nan))))
                 self.backwardPenaltyComponents.append(float(info.get('backward_penalty', np.nan)))
+                self.actionDeltaMeanComponents.append(float(info.get('action_delta_mean', np.nan)))
+                self.actionDeltaPenaltyComponents.append(float(info.get('action_delta_penalty', np.nan)))
                 for i in range(len(state)):
                     self.stateList[i].append(state[i])
 
@@ -1044,11 +1261,15 @@ class Train():
                 terminal = np.array([Done]) # turn into array for replay buffer
                 reward = np.array([reward])
                 
-                # add replay sample
-
+                # Store the transition locally until the episode score is known.
                 print(f'action shape: {action.shape}')
-                self.replay.add_sample(observation=state, action=action, reward=reward, next_observation=next_state,
-                   terminal=terminal, env_info={'terrain_id': terrain_idx})
+                episode_transitions.append({
+                    'observation': np.asarray(state, dtype=np.float32).copy(),
+                    'action': np.asarray(action, dtype=np.float32).copy(),
+                    'reward': reward.copy(),
+                    'next_observation': np.asarray(next_state, dtype=np.float32).copy(),
+                    'terminal': terminal.copy(),
+                })
 
                 state = next_state # set state for next iteration
 
@@ -1062,10 +1283,71 @@ class Train():
              
             self.episodeCumulativeRewards.append(episodeRewards)
             self.eachEpisodeCumuRewards.append(episodeContRewards) # list of a list
+            self._commit_episode_transitions(
+                transitions=episode_transitions,
+                terrain_idx=terrain_idx,
+                episode_return=episodeRewards,
+            )
 
             self.logData() # log data
             self.replay.terminate_episode() # run replay end sequence
             return True
+
+    def _commit_episode_transitions(self, transitions, terrain_idx, episode_return):
+        if not transitions:
+            return
+
+        progress_values = np.asarray(self.distanceProgressCmComponents, dtype=np.float32)
+        reward_values = np.asarray(self.timestepRewards, dtype=np.float32)
+        action_delta_values = np.asarray(self.actionDeltaMeanComponents, dtype=np.float32)
+        finite_action_deltas = action_delta_values[np.isfinite(action_delta_values)]
+        mean_action_delta = (
+            float(np.mean(finite_action_deltas))
+            if finite_action_deltas.size > 0 else 0.0
+        )
+        positive_reward_fraction = (
+            float(np.mean(reward_values > 0.0))
+            if reward_values.size > 0 else 0.0
+        )
+        mean_reward = (
+            float(np.mean(reward_values))
+            if reward_values.size > 0 else 0.0
+        )
+        episode_progress_cm = (
+            float(np.nansum(progress_values))
+            if progress_values.size > 0 else 0.0
+        )
+        episode_score = episode_replay_score(
+            mean_reward,
+            positive_reward_fraction,
+            mean_action_delta,
+            self.episode_score_action_delta_weight,
+        )
+        env_info = {
+            'terrain_id': terrain_idx,
+            'episode_return': float(episode_return),
+            'episode_progress_cm': episode_progress_cm,
+            'episode_positive_reward_fraction': positive_reward_fraction,
+            'episode_mean_action_delta': mean_action_delta,
+            'episode_score': episode_score,
+        }
+
+        print(
+            "episode replay score -> "
+            f"return: {episode_return:.4f}, progress_cm: {episode_progress_cm:.4f}, "
+            f"positive_reward_fraction: {positive_reward_fraction:.3f}, "
+            f"mean_action_delta: {mean_action_delta:.4f}, score: {episode_score:.4f}"
+        )
+
+        for transition in transitions:
+            self.replay.add_sample(
+                observation=transition['observation'],
+                action=transition['action'],
+                reward=transition['reward'],
+                next_observation=transition['next_observation'],
+                terminal=transition['terminal'],
+                env_info=env_info,
+            )
 
 
 
@@ -1245,6 +1527,9 @@ class Train():
                 self.design_counter,
                 self.episode_counter,
             )
+            target_entropy = self._scheduled_target_entropy()
+            self.rl_alg.set_target_entropy(target_entropy)
+            print(f'scheduled SAC target entropy: {target_entropy:.3f}')
             q1loss, q2loss, policyloss, popq1loss, popq2loss, poppolicyloss = self.rl_alg.single_train_step(train_ind=True, train_pop=train_pop) # train one step
             
             #log data on lists
@@ -1278,9 +1563,16 @@ class Train():
                     f"for {self.current_training_terrain}: collecting replay only, no SAC updates."
                 )
         self.logTrainLoss() # log data
+        self._maybe_run_deterministic_probe()
+        completed_episode_in_block = self.current_training_episode_in_block
+        completed_terrain = self.current_training_terrain
         self.episode_counter += 1
 
         print(f'episode counter at: {self.episode_counter}')
+        self._maybe_promote_best_policy_for_completed_block(
+            completed_terrain,
+            completed_episode_in_block,
+        )
 
         self.save_networks()
         return True
@@ -1291,6 +1583,172 @@ class Train():
             if diagnostics and key in diagnostics:
                 value = diagnostics[key]
             target[key].extend([value] * row_count)
+
+    def _policy_state_copy(self, policy):
+        return {
+            key: value.detach().cpu().clone()
+            for key, value in policy.state_dict().items()
+        }
+
+    def _restore_policy_state(self, policy, state):
+        policy.load_state_dict({
+            key: value.to(ptu.device)
+            for key, value in state.items()
+        })
+
+    def _probe_key(self, terrain=None):
+        terrain = self.current_training_terrain if terrain is None else terrain
+        return (int(self.design_counter), str(terrain))
+
+    def _maybe_run_deterministic_probe(self):
+        if self.deterministic_eval_every_episodes <= 0:
+            return
+        if self.current_training_episode_in_block is None:
+            return
+
+        episode_in_block = int(self.current_training_episode_in_block)
+        should_probe = (
+            (episode_in_block + 1) % self.deterministic_eval_every_episodes == 0
+            or episode_in_block == (self.training_terrain_block_size - 1)
+        )
+        if not should_probe:
+            return
+
+        terrain = self.current_training_terrain
+        terrain_idx = self.current_training_terrain_id
+        print(
+            f"Running deterministic probe for {terrain} after terrain-block "
+            f"episode {episode_in_block + 1}."
+        )
+        result = self._run_deterministic_probe(terrain, terrain_idx)
+        if result is None:
+            return
+
+        key = self._probe_key(terrain)
+        previous_best = self.best_probe_scores.get(key, -np.inf)
+        if result['return'] > previous_best:
+            policy = self.rl_alg.get_policy_network(self.networks['individual'])
+            self.best_probe_scores[key] = float(result['return'])
+            self.best_probe_policy_states[key] = self._policy_state_copy(policy)
+            self.best_probe_metadata[key] = result
+            self._save_best_probe_policy(terrain, result)
+            print(
+                f"New best deterministic probe for {terrain}: "
+                f"return={result['return']:.4f}, progress_cm={result['progress_cm']:.4f}."
+            )
+
+    def _run_deterministic_probe(self, terrain, terrain_idx):
+        previous_terrain = SnakeEnv.get_current_terrain()
+        SnakeEnv.set_current_terrain(terrain)
+        probe_seed = self._stable_seed(
+            'deterministic_probe',
+            self.design_counter,
+            self.episode_counter,
+            terrain,
+        )
+        reset_prompt = (
+            "\n"
+            "=== DETERMINISTIC PROBE RESET ===\n"
+            f"Design cycle: {self.design_counter}\n"
+            f"Training episode: {self.episode_counter}\n"
+            f"Terrain: {terrain}\n"
+            f"Put the robot on {terrain}, reset it by hand, then press Enter "
+            "to run one deterministic probe rollout."
+        )
+        state, _ = self._reset_env_with_motor_recovery(
+            seed=probe_seed,
+            phase=f"deterministic probe {terrain}",
+            options={'reset_prompt': reset_prompt},
+        )
+        if state is None:
+            SnakeEnv.set_current_terrain(previous_terrain)
+            print(f"Skipping deterministic probe for {terrain}: reset failed.")
+            return None
+
+        policy = self.rl_alg.get_policy_network(self.networks['individual'])
+        done = False
+        steps = 0
+        cumulative_reward = 0.0
+        cumulative_progress = 0.0
+        positive_rewards = 0
+        action_delta_values = []
+        rollout_faulted = False
+        while (not done) and steps < self._episode_length:
+            action = self._policy_action(policy, state, deterministic=True)
+            try:
+                next_state, reward, terminated, truncated, info = self.env.step(action)
+            except MotorFaultError as exc:
+                self._recover_motor_fault(
+                    f"deterministic probe {terrain} step {steps + 1}",
+                    exc,
+                )
+                rollout_faulted = True
+                break
+
+            reward = float(reward)
+            cumulative_reward += reward
+            cumulative_progress += float(info.get('distance_progress_cm', 0.0))
+            positive_rewards += int(reward > 0.0)
+            action_delta_values.append(float(info.get('action_delta_mean', 0.0)))
+            steps += 1
+            done = terminated or truncated or (steps >= self._episode_length)
+            state = next_state
+
+        self._disable_motor_torque_with_recovery("end of deterministic probe")
+        SnakeEnv.set_current_terrain(previous_terrain)
+        if rollout_faulted:
+            print(f"Deterministic probe for {terrain} ended early after a motor fault.")
+            return None
+
+        return {
+            'terrain': terrain,
+            'terrain_id': int(terrain_idx),
+            'episode_counter': int(self.episode_counter),
+            'episode_in_terrain_block': int(self.current_training_episode_in_block),
+            'seed': int(probe_seed),
+            'return': float(cumulative_reward),
+            'progress_cm': float(cumulative_progress),
+            'steps': int(steps),
+            'positive_reward_fraction': float(positive_rewards / max(steps, 1)),
+            'mean_action_delta': (
+                float(np.mean(action_delta_values))
+                if action_delta_values else 0.0
+            ),
+        }
+
+    def _save_best_probe_policy(self, terrain, result):
+        results_dir = self._checkpoint_results_dir()
+        os.makedirs(results_dir, exist_ok=True)
+        policy = self.rl_alg.get_policy_network(self.networks['individual'])
+        path = os.path.join(
+            results_dir,
+            (
+                f'best_probe_ind_policy_{self.date}_DesignCycle{self.design_counter}_'
+                f'{terrain}_{self.results_tag}.pt'
+            ),
+        )
+        torch.save(policy, path)
+        metadata_path = path.replace('.pt', '_metadata.json')
+        with open(metadata_path, 'w') as f:
+            json.dump(result, f, indent=2)
+
+    def _maybe_promote_best_policy_for_completed_block(self, terrain, episode_in_block):
+        if terrain is None or episode_in_block is None:
+            return
+        if int(episode_in_block) != (self.training_terrain_block_size - 1):
+            return
+        key = self._probe_key(terrain)
+        state = self.best_probe_policy_states.get(key)
+        if state is None:
+            return
+
+        self._restore_policy_state(self.rl_alg._ind_policy, state)
+        if self.promote_best_policy_to_population:
+            self._restore_policy_state(self.rl_alg._pop_policy, state)
+        print(
+            f"Promoted best deterministic probe policy for {terrain} "
+            f"(score {self.best_probe_scores[key]:.4f})."
+        )
       
 
     def initial_design_loop(self):
@@ -1746,21 +2204,38 @@ class Train():
             'random_action_prob_start': self.random_action_prob_start,
             'random_action_prob_decay': self.random_action_prob_decay,
             'random_action_prob_min': self.random_action_prob_min,
+            'deterministic_rollout_start_episode': self.deterministic_rollout_start_episode,
+            'deterministic_rollout_ramp_episodes': self.deterministic_rollout_ramp_episodes,
+            'target_entropy_start': self.target_entropy_start,
+            'target_entropy_end': self.target_entropy_end,
+            'target_entropy_anneal_episodes': self.target_entropy_anneal_episodes,
+            'deterministic_eval_every_episodes': self.deterministic_eval_every_episodes,
+            'episode_score_action_delta_weight': self.episode_score_action_delta_weight,
+            'promote_best_policy_to_population': self.promote_best_policy_to_population,
             'population_training_start_design': self.population_training_start_design,
             'terrain_prefill_episodes': self.terrain_prefill_episodes,
             'action_noise_std': self.action_noise_std,
             'repeat_action_eps': self.repeat_action_eps,
             'repeat_action_perturb_std': self.repeat_action_perturb_std,
+            'action_smoothing_beta': self.action_smoothing_beta,
+            'gait_period_steps': getattr(self.env, 'gait_period_steps', None),
+            'action_delta_penalty_scale': getattr(self.env, 'action_delta_penalty_scale', None),
             'max_motor_fault_step_retries': self.max_motor_fault_step_retries,
             'motor_fault_step_retry_delay_s': self.motor_fault_step_retry_delay_s,
             'sac_batch_size': int(self.rl_alg._batch_size),
             'individual_sac_updates': int(self.rl_alg._nmbr_ind_updates),
             'population_sac_updates': int(self.rl_alg._nmbr_pop_updates),
+            'individual_replay_epochs_per_update': float(self.rl_alg._ind_replay_epochs_per_update),
+            'population_replay_epochs_per_update': float(self.rl_alg._pop_replay_epochs_per_update),
             'individual_policy_lr': self.rl_alg._ind_sac_trainer_kwargs['policy_lr'],
             'individual_qf_lr': self.rl_alg._ind_sac_trainer_kwargs['qf_lr'],
             'population_policy_lr': self.rl_alg._pop_sac_trainer_kwargs['policy_lr'],
             'population_qf_lr': self.rl_alg._pop_sac_trainer_kwargs['qf_lr'],
             'individual_batch_fraction': self.replay._individual_batch_fraction,
+            'reward_biased_batch_fraction': self.replay._reward_biased_batch_fraction,
+            'reward_bias_temperature': self.replay._reward_bias_temperature,
+            'reward_bias_step_weight': self.replay._reward_bias_step_weight,
+            'reward_bias_episode_weight': self.replay._reward_bias_episode_weight,
             'use_legacy_policy_warm_start': self.use_legacy_policy_warm_start,
             'legacy_checkpoint_prefix': None,
             'design_slot_names': list(SnakeEnv.design_slot_names),
@@ -1991,14 +2466,47 @@ class Train():
             self.use_legacy_policy_warm_start = False
             default_pop_train_start_design = '0'
             default_terrain_prefill_episodes = '0'
-            default_action_noise_std = '0.02'
+            default_action_noise_std = '0.0'
             default_repeat_action_eps = '0.02'
-            default_repeat_action_perturb_std = '0.02'
+            default_repeat_action_perturb_std = '0.0'
+            default_action_smoothing_beta = str(metadata.get('action_smoothing_beta', self.action_smoothing_beta))
             default_policy_warmup_episodes = str(self.policy_action_warmup_episodes)
             default_update_warmup_episodes = str(self.training_update_warmup_episodes)
             default_random_action_prob_start = str(self.random_action_prob_start)
             default_random_action_prob_decay = str(self.random_action_prob_decay)
             default_random_action_prob_min = str(self.random_action_prob_min)
+            default_deterministic_rollout_start_episode = str(
+                metadata.get(
+                    'deterministic_rollout_start_episode',
+                    self.deterministic_rollout_start_episode,
+                )
+            )
+            default_deterministic_rollout_ramp_episodes = str(
+                metadata.get(
+                    'deterministic_rollout_ramp_episodes',
+                    self.deterministic_rollout_ramp_episodes,
+                )
+            )
+            default_target_entropy_start = str(metadata.get('target_entropy_start', self.target_entropy_start))
+            default_target_entropy_end = str(metadata.get('target_entropy_end', self.target_entropy_end))
+            default_target_entropy_anneal_episodes = str(
+                metadata.get(
+                    'target_entropy_anneal_episodes',
+                    self.target_entropy_anneal_episodes,
+                )
+            )
+            default_deterministic_eval_every_episodes = str(
+                metadata.get(
+                    'deterministic_eval_every_episodes',
+                    self.deterministic_eval_every_episodes,
+                )
+            )
+            default_episode_score_action_delta_weight = str(
+                metadata.get(
+                    'episode_score_action_delta_weight',
+                    self.episode_score_action_delta_weight,
+                )
+            )
             self.population_training_start_design = int(
                 os.getenv('SNAKE_POP_TRAIN_START_DESIGN', default_pop_train_start_design)
             )
@@ -2026,6 +2534,64 @@ class Train():
                 0.0,
                 float(os.getenv('SNAKE_RANDOM_ACTION_PROB_MIN', default_random_action_prob_min)),
             )
+            self.deterministic_rollout_start_episode = max(
+                0,
+                int(
+                    os.getenv(
+                        'SNAKE_DETERMINISTIC_ROLLOUT_START_EPISODE',
+                        default_deterministic_rollout_start_episode,
+                    )
+                ),
+            )
+            self.deterministic_rollout_ramp_episodes = max(
+                0,
+                int(
+                    os.getenv(
+                        'SNAKE_DETERMINISTIC_ROLLOUT_RAMP_EPISODES',
+                        default_deterministic_rollout_ramp_episodes,
+                    )
+                ),
+            )
+            self.target_entropy_start = float(
+                os.getenv('SNAKE_TARGET_ENTROPY_START', default_target_entropy_start)
+            )
+            self.target_entropy_end = float(
+                os.getenv('SNAKE_TARGET_ENTROPY_END', default_target_entropy_end)
+            )
+            self.target_entropy_anneal_episodes = max(
+                1,
+                int(
+                    os.getenv(
+                        'SNAKE_TARGET_ENTROPY_ANNEAL_EPISODES',
+                        default_target_entropy_anneal_episodes,
+                    )
+                ),
+            )
+            self.deterministic_eval_every_episodes = max(
+                0,
+                int(
+                    os.getenv(
+                        'SNAKE_DETERMINISTIC_EVAL_EVERY_EPISODES',
+                        default_deterministic_eval_every_episodes,
+                    )
+                ),
+            )
+            self.episode_score_action_delta_weight = max(
+                0.0,
+                float(
+                    os.getenv(
+                        'SNAKE_EPISODE_SCORE_ACTION_DELTA_WEIGHT',
+                        default_episode_score_action_delta_weight,
+                    )
+                ),
+            )
+            self.promote_best_policy_to_population = self._read_bool_env(
+                'SNAKE_PROMOTE_BEST_POLICY_TO_POPULATION',
+                default=bool(metadata.get(
+                    'promote_best_policy_to_population',
+                    self.promote_best_policy_to_population,
+                )),
+            )
             self.action_noise_std = max(
                 0.0,
                 float(os.getenv('SNAKE_ACTION_NOISE_STD', default_action_noise_std)),
@@ -2038,6 +2604,94 @@ class Train():
                 0.0,
                 float(os.getenv('SNAKE_REPEAT_ACTION_PERTURB_STD', default_repeat_action_perturb_std)),
             )
+            self.action_smoothing_beta = float(
+                np.clip(
+                    float(os.getenv('SNAKE_ACTION_SMOOTHING_BETA', default_action_smoothing_beta)),
+                    0.0,
+                    0.95,
+                )
+            )
+            if hasattr(self.env, 'gait_period_steps'):
+                self.env.gait_period_steps = max(
+                    1,
+                    int(os.getenv(
+                        'SNAKE_GAIT_PERIOD_STEPS',
+                        metadata.get('gait_period_steps', self.env.gait_period_steps),
+                    )),
+                )
+            if hasattr(self.env, 'action_delta_penalty_scale'):
+                self.env.action_delta_penalty_scale = max(
+                    0.0,
+                    float(os.getenv(
+                        'SNAKE_ACTION_DELTA_PENALTY_SCALE',
+                        metadata.get(
+                            'action_delta_penalty_scale',
+                            self.env.action_delta_penalty_scale,
+                        ),
+                    )),
+                )
+            self.replay.configure_sampling(
+                reward_biased_batch_fraction=float(
+                    os.getenv(
+                        'SNAKE_REWARD_BIASED_BATCH_FRACTION',
+                        metadata.get(
+                            'reward_biased_batch_fraction',
+                            self.replay._reward_biased_batch_fraction,
+                        ),
+                    )
+                ),
+                reward_bias_temperature=float(
+                    os.getenv(
+                        'SNAKE_REWARD_BIAS_TEMPERATURE',
+                        metadata.get(
+                            'reward_bias_temperature',
+                            self.replay._reward_bias_temperature,
+                        ),
+                    )
+                ),
+                reward_bias_step_weight=float(
+                    os.getenv(
+                        'SNAKE_REWARD_BIAS_STEP_WEIGHT',
+                        metadata.get(
+                            'reward_bias_step_weight',
+                            self.replay._reward_bias_step_weight,
+                        ),
+                    )
+                ),
+                reward_bias_episode_weight=float(
+                    os.getenv(
+                        'SNAKE_REWARD_BIAS_EPISODE_WEIGHT',
+                        metadata.get(
+                            'reward_bias_episode_weight',
+                            self.replay._reward_bias_episode_weight,
+                        ),
+                    )
+                ),
+            )
+            self.rl_alg._ind_replay_epochs_per_update = max(
+                1.0,
+                float(
+                    os.getenv(
+                        'SNAKE_IND_REPLAY_EPOCHS_PER_UPDATE',
+                        metadata.get(
+                            'individual_replay_epochs_per_update',
+                            self.rl_alg._ind_replay_epochs_per_update,
+                        ),
+                    )
+                ),
+            )
+            self.rl_alg._pop_replay_epochs_per_update = max(
+                1.0,
+                float(
+                    os.getenv(
+                        'SNAKE_POP_REPLAY_EPOCHS_PER_UPDATE',
+                        metadata.get(
+                            'population_replay_epochs_per_update',
+                            self.rl_alg._pop_replay_epochs_per_update,
+                        ),
+                    )
+                ),
+            )
             self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size
             self._seed_global_rngs('resume', self.design_counter, self.episode_counter)
             print(f"restored design_counter={self.design_counter}, episode_counter={self.episode_counter}")
@@ -2049,7 +2703,13 @@ class Train():
                 f"update warmup episodes: {self.training_update_warmup_episodes}, "
                 f"random action start/min: {self.random_action_prob_start:.3f}/{self.random_action_prob_min:.3f}, "
                 f"action_noise_std: {self.action_noise_std:.3f}, "
-                f"repeat_action_perturb_std: {self.repeat_action_perturb_std:.3f}"
+                f"repeat_action_perturb_std: {self.repeat_action_perturb_std:.3f}, "
+                f"action_smoothing_beta: {self.action_smoothing_beta:.3f}, "
+                f"reward_biased_batch_fraction: {self.replay._reward_biased_batch_fraction:.3f}, "
+                f"ind_replay_epochs: {self.rl_alg._ind_replay_epochs_per_update:.2f}, "
+                f"deterministic rollout start/ramp: "
+                f"{self.deterministic_rollout_start_episode}/{self.deterministic_rollout_ramp_episodes}, "
+                f"target entropy start/end: {self.target_entropy_start:.2f}/{self.target_entropy_end:.2f}"
             )
         else:
             raise FileNotFoundError(
@@ -2069,6 +2729,8 @@ class Train():
                 f"No replay buffer found for checkpoint prefix '{checkpoint_prefix}'. "
                 "Resume requires replay state so population/design optimization remains consistent."
             )
+
+        self._prune_resume_logs(checkpoint_prefix)
 
 
 
@@ -2255,6 +2917,8 @@ class Train():
         self.livingPenaltyComponents = self.livingPenaltyComponents[:min_len]
         self.noProgressPenaltyComponents = self.noProgressPenaltyComponents[:min_len]
         self.backwardPenaltyComponents = self.backwardPenaltyComponents[:min_len]
+        self.actionDeltaMeanComponents = self.actionDeltaMeanComponents[:min_len]
+        self.actionDeltaPenaltyComponents = self.actionDeltaPenaltyComponents[:min_len]
         xPositionList = xPositionList[-min_len:]
         yPositionList = yPositionList[-min_len:]
         self.epList = self.epList[:min_len]
@@ -2281,6 +2945,8 @@ class Train():
         rewardDF['Living_Penalty'] = self.livingPenaltyComponents
         rewardDF['No_Progress_Penalty'] = self.noProgressPenaltyComponents
         rewardDF['Backward_Penalty'] = self.backwardPenaltyComponents
+        rewardDF['Action_Delta_Mean'] = self.actionDeltaMeanComponents
+        rewardDF['Action_Delta_Penalty'] = self.actionDeltaPenaltyComponents
         rewardDF['Terrain'] = [SnakeEnv.get_current_terrain()] * len(self.timesteps)
         design = SnakeEnv.get_current_design()
         rewardDF['Experiment_Seed'] = [int(self.seed)] * len(self.timesteps)
