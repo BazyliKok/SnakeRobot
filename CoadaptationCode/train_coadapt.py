@@ -169,7 +169,7 @@ class Train():
         )
         self.episode_score_progress_scale_cm = max(
             1e-6,
-            float(os.getenv('SNAKE_EPISODE_SCORE_PROGRESS_SCALE_CM', '25.0')),
+            float(os.getenv('SNAKE_EPISODE_SCORE_PROGRESS_SCALE_CM', '15.0')),
         )
         self.episode_score_progress_weight = max(
             0.0,
