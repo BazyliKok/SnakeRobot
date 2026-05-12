@@ -317,11 +317,29 @@ class MotorsSynced:
 
         time.sleep(0.2)
 
-        if not self.portHandler.openPort():
+        try:
+            port_opened = self.portHandler.openPort()
+        except OSError as exc:
+            print(f"Motor recovery failed: OS error while reopening the DYNAMIXEL port: {exc}")
+            return False
+        except Exception as exc:
+            print(f"Motor recovery failed: unexpected error while reopening the DYNAMIXEL port: {exc}")
+            return False
+
+        if not port_opened:
             print("Motor recovery failed: could not reopen the DYNAMIXEL port.")
             return False
 
-        if not self.portHandler.setBaudRate(self.BAUDRATE):
+        try:
+            baudrate_set = self.portHandler.setBaudRate(self.BAUDRATE)
+        except OSError as exc:
+            print(f"Motor recovery failed: OS error while restoring the DYNAMIXEL baudrate: {exc}")
+            return False
+        except Exception as exc:
+            print(f"Motor recovery failed: unexpected error while restoring the DYNAMIXEL baudrate: {exc}")
+            return False
+
+        if not baudrate_set:
             print("Motor recovery failed: could not restore the DYNAMIXEL baudrate.")
             return False
 
@@ -465,7 +483,7 @@ class MotorsSynced:
             success = self._log_motor_result(motorID, "disable torque", dxlCommRes, dxlError) and success
         return success
 
-    def _read_positions_raw(self):
+    def _read_positions_raw(self, recover_on_failure=True):
         self.groupSyncRead.clearParam()
         for motorID in self.DXL_ID:
             addParamRes = self.groupSyncRead.addParam(motorID)
@@ -481,7 +499,8 @@ class MotorsSynced:
         if dxlCommRes != self.COMM_SUCCESS:
             print("groupSyncRead txRxPacket failed: %s" % self.packetHandler.getTxRxResult(dxlCommRes))
             self.groupSyncRead.clearParam()
-            self._attempt_bus_recovery("position sync read failed", force_reboot=True)
+            if recover_on_failure:
+                self._attempt_bus_recovery("position sync read failed", force_reboot=True)
             return None
 
         for motorID in self.DXL_ID:
@@ -495,11 +514,12 @@ class MotorsSynced:
         self.groupSyncRead.clearParam()
 
         if unavailable_motors:
-            self._attempt_bus_recovery(
-                f"missing position feedback from motors {unavailable_motors}",
-                unavailable_motors,
-                force_reboot=True,
-            )
+            if recover_on_failure:
+                self._attempt_bus_recovery(
+                    f"missing position feedback from motors {unavailable_motors}",
+                    unavailable_motors,
+                    force_reboot=True,
+                )
             return None
 
         return motorPos
@@ -646,8 +666,8 @@ class MotorsSynced:
         return False
     
         
-    def readPos(self):
-        motorPos = self._read_positions_raw()
+    def readPos(self, recover_on_failure=True):
+        motorPos = self._read_positions_raw(recover_on_failure=recover_on_failure)
         if motorPos is None:
             return self.last_good_motor_pos.copy()
 

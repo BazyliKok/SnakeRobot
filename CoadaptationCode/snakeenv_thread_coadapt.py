@@ -786,11 +786,13 @@ class SnakeEnv(gymnasium.Env):
         SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
         try:
-            SnakeEnv.motorPosition = SnakeEnv.motors.readPos()
+            SnakeEnv.motorPosition = SnakeEnv.motors.readPos(recover_on_failure=False)
             # print('In thread', SnakeEnv.motorPosition)
+        except Exception as e:
+            print(f"Motor polling thread warning: {e}")
         finally:
             SnakeEnv.motorLock.release()
-        time.sleep(.001)
+        time.sleep(.02)
         return
     
     @staticmethod
