@@ -2410,26 +2410,6 @@ if __name__ == '__main__':
         trainingloopThread.join()
     finally:
         stopEvent.set()
-        try:
-            torque_disabled = SnakeEnv.disableMotorTorque()
-            if not torque_disabled:
-                print("Could not disable motor torque during shutdown; forcing DYNAMIXEL reboot.")
-                recovered = SnakeEnv.recoverMotorFault(
-                    context="shutdown torque disable failed",
-                    force_reboot=True,
-                )
-                if recovered and not SnakeEnv.disableMotorTorque():
-                    print("Motor torque still could not be disabled after shutdown reboot.")
-        except Exception as exc:
-            print(f"Could not disable motor torque during shutdown: {exc}. Forcing DYNAMIXEL reboot.")
-            try:
-                recovered = SnakeEnv.recoverMotorFault(
-                    context=f"shutdown torque disable raised: {exc}",
-                    force_reboot=True,
-                )
-                if recovered and not SnakeEnv.disableMotorTorque():
-                    print("Motor torque still could not be disabled after shutdown reboot.")
-            except Exception as recovery_exc:
-                print(f"Shutdown motor recovery raised an exception: {recovery_exc}")
+        trainingObj._disable_motor_torque_with_recovery("shutdown")
         motorThread.join(timeout=2.0)
         optiThread.join(timeout=2.0)
