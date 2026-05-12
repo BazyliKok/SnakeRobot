@@ -832,6 +832,11 @@ class SnakeEnv(gymnasium.Env):
             SnakeEnv.motorLock.release()
 
     @staticmethod
+    def motorBusAvailable():
+        SnakeEnv._ensure_hardware_initialized()
+        return SnakeEnv.motors.isDevicePresent()
+
+    @staticmethod
     def set_new_design(design):
         coerced = SnakeEnv._coerce_design_vector(design)
         SnakeEnv.current_design = coerced

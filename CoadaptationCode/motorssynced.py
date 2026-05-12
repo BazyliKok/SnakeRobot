@@ -128,6 +128,9 @@ class MotorsSynced:
     def _cache_last_good_positions(self, raw_positions):
         self.last_good_motor_pos = [self._normalize_position(pos) for pos in raw_positions]
 
+    def isDevicePresent(self):
+        return os.path.exists(self.DEVICENAME)
+
     def _format_hardware_error_status(self, hardware_error):
         if hardware_error == 0:
             return "clear"
@@ -378,6 +381,13 @@ class MotorsSynced:
     def _attempt_bus_recovery(self, context, motor_ids=None, force_reboot=False):
         if self._recovery_in_progress:
             print(f"Motor recovery already running; skipping nested recovery during {context}.")
+            return False
+
+        if not self.isDevicePresent():
+            print(
+                f"Motor recovery aborted: DYNAMIXEL device {self.DEVICENAME} is not present. "
+                "Check USB connection or update SNAKE_DXL_DEVICE."
+            )
             return False
 
         self._recovery_in_progress = True
@@ -654,7 +664,8 @@ class MotorsSynced:
 
                 if dxlCommRes != self.COMM_SUCCESS: # check if writing was a success
                         print("%s" % self.packetHandler.getTxRxResult(dxlCommRes))
-                        self.reportHardwareErrorStatuses(context="after failed goal position sync write")
+                        if self.isDevicePresent():
+                            self.reportHardwareErrorStatuses(context="after failed goal position sync write")
                         self._attempt_bus_recovery("goal position sync write failed", force_reboot=True)
                         return False
                 return True

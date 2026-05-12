@@ -688,6 +688,12 @@ class Train():
         if not disable_after_recovery:
             return recovered
 
+        if not recovered and not SnakeEnv.motorBusAvailable():
+            print(
+                "Skipping motor torque cleanup because the DYNAMIXEL USB device is not present."
+            )
+            return False
+
         torque_disabled = self._disable_motor_torque_with_recovery(
             f"{phase} recovery cleanup"
         )
@@ -700,6 +706,11 @@ class Train():
             disable_after_recovery=False,
         )
         if not recovered:
+            if not SnakeEnv.motorBusAvailable():
+                print(
+                    "Skipping failed-recovery torque cleanup because the DYNAMIXEL USB device is not present."
+                )
+                return False
             self._disable_motor_torque_with_recovery(f"{phase} failed recovery cleanup")
             return False
 
@@ -754,6 +765,13 @@ class Train():
         return None
 
     def _disable_motor_torque_with_recovery(self, phase):
+        if not SnakeEnv.motorBusAvailable():
+            print(
+                f"Cannot disable motor torque during {phase}: "
+                "DYNAMIXEL USB device is not present."
+            )
+            return False
+
         try:
             torque_disabled = SnakeEnv.disableMotorTorque()
             if torque_disabled:
