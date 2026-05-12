@@ -1,0 +1,2 @@
+terrain_block,terrain,episodes,first_episode,last_episode,mean_reward,median_reward,std_reward,best_reward,worst_reward,mean_progress_cm,mean_raw_progress_cm,mean_steps,mean_no_progress_steps,mean_backward_steps,mean_delta_x,mean_delta_y
+0,carpet,50,0,49,2.3182027704195542,6.595521631340858,12.41635490174981,12.003960004529844,-58.19914500196477,8.504913618435591,8.333352699875832,175.0,60.28,0.0,-0.45134640216827393,-0.10164855420589446
