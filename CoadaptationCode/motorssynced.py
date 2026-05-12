@@ -1,4 +1,5 @@
 from dynamixel_sdk import * 
+import glob
 import os
 import threading
 import time
@@ -84,6 +85,7 @@ class MotorsSynced:
         self.LEN_PRES_LOAD                  = 2
 
         self.DEVICENAME                     = os.getenv("SNAKE_DXL_DEVICE", '/dev/ttyUSB0') # this changes with every device, in linux: '/dev/ttyUSB0'
+        self.AUTO_DETECT_DEVICE             = os.getenv("SNAKE_DXL_AUTO_DETECT_DEVICE", "1").strip().lower() in ("1", "true", "yes", "on")
         self.portHandler                    = PortHandler(self.DEVICENAME)
         self.packetHandler                  = PacketHandler(self.PROTOCOL_VERSION)
 
@@ -128,8 +130,45 @@ class MotorsSynced:
     def _cache_last_good_positions(self, raw_positions):
         self.last_good_motor_pos = [self._normalize_position(pos) for pos in raw_positions]
 
+    def _candidate_device_names(self):
+        candidates = []
+        configured = os.getenv("SNAKE_DXL_DEVICE")
+        if configured:
+            candidates.append(configured)
+        candidates.append(self.DEVICENAME)
+        candidates.extend(sorted(glob.glob("/dev/ttyUSB*")))
+        candidates.extend(sorted(glob.glob("/dev/ttyACM*")))
+
+        seen = set()
+        unique_candidates = []
+        for candidate in candidates:
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                unique_candidates.append(candidate)
+        return unique_candidates
+
+    def _refresh_device_name(self):
+        if os.path.exists(self.DEVICENAME):
+            return True
+
+        if not self.AUTO_DETECT_DEVICE:
+            return False
+
+        for candidate in self._candidate_device_names():
+            if os.path.exists(candidate):
+                if candidate != self.DEVICENAME:
+                    print(
+                        f"DYNAMIXEL device moved from {self.DEVICENAME} to {candidate}; "
+                        "using the new device."
+                    )
+                    self.DEVICENAME = candidate
+                    self.portHandler = PortHandler(self.DEVICENAME)
+                    self._reset_sync_handlers()
+                return True
+        return False
+
     def isDevicePresent(self):
-        return os.path.exists(self.DEVICENAME)
+        return self._refresh_device_name()
 
     def _format_hardware_error_status(self, hardware_error):
         if hardware_error == 0:
@@ -313,6 +352,12 @@ class MotorsSynced:
         return self.setMotorSpeed()
 
     def _reopen_port(self):
+        if not self._refresh_device_name():
+            print(
+                f"Motor recovery failed: no DYNAMIXEL USB device found for {self.DEVICENAME}."
+            )
+            return False
+
         try:
             self.portHandler.closePort()
         except Exception:
@@ -383,7 +428,7 @@ class MotorsSynced:
             print(f"Motor recovery already running; skipping nested recovery during {context}.")
             return False
 
-        if not self.isDevicePresent():
+        if not self._refresh_device_name():
             print(
                 f"Motor recovery aborted: DYNAMIXEL device {self.DEVICENAME} is not present. "
                 "Check USB connection or update SNAKE_DXL_DEVICE."
@@ -400,27 +445,15 @@ class MotorsSynced:
             target_ids = list(self.DXL_ID if motor_ids is None else motor_ids)
             motors_to_reboot = []
 
+            if force_reboot:
+                print(f"Rebooting motor(s) after '{context}': {target_ids}")
+                recovered_all = True
+                for motorID in target_ids:
+                    recovered_all = self.rebootMotor(motorID) and recovered_all
+                return recovered_all
+
             for motorID in target_ids:
                 hardware_error = self.readHardwareErrorStatus(motorID)
-                if force_reboot:
-                    if hardware_error is None:
-                        print(
-                            f"Motor {motorID} hardware status unavailable after '{context}'. "
-                            "Forced recovery requested; rebooting anyway."
-                        )
-                    elif hardware_error == 0:
-                        print(
-                            f"Motor {motorID} reports clear hardware status after '{context}'. "
-                            "Forced recovery requested; rebooting anyway."
-                        )
-                    else:
-                        print(
-                            f"Motor {motorID} latched hardware error status "
-                            f"0x{hardware_error:02X} ({self._format_hardware_error_status(hardware_error)}). Rebooting."
-                        )
-                    motors_to_reboot.append(motorID)
-                    continue
-
                 if hardware_error is None:
                     continue
                 if hardware_error != 0:
