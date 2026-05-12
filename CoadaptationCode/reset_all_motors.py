@@ -9,7 +9,7 @@ BAUDRATE         = 2000000   # Default is 57600. Update if you changed it (e.g.,
 # Device Name:
 # Windows: "COM1", "COM3", etc.
 # Linux/Mac: "/dev/ttyUSB0", "/dev/tty.usbserial", etc.
-DEVICENAME       = '/dev/ttyUSB1' 
+DEVICENAME       = '/dev/ttyUSB2' 
 
 # --- Setup Handlers ---
 portHandler = PortHandler(DEVICENAME)
