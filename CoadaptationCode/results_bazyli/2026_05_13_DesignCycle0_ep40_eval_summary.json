@@ -1,0 +1,90 @@
+{
+  "summary": {
+    "Date": "2026_05_13",
+    "Experiment_Seed": 12345,
+    "Training_Schedule_Seed": 3937872650,
+    "Design_Counter": 0,
+    "Episode_Counter": 40,
+    "Training_Episodes_Per_Design": 40,
+    "Training_Terrain_Block_Size": 40,
+    "Training_Terrain_Block_Order": "carpet",
+    "Eval_Episodes_Per_Terrain": 3,
+    "Overall_Total_Eval_Rollouts": 3,
+    "Overall_Valid_Eval_Rollouts": 3,
+    "Overall_Reset_Failures": 0,
+    "Overall_Motor_Faults": 0,
+    "Overall_Failed_Eval_Rollouts": 0,
+    "Overall_Valid_Rollout_Rate": 1.0,
+    "Overall_Reset_Failure_Rate": 0.0,
+    "Overall_Motor_Fault_Rate": 0.0,
+    "Overall_Failure_Rate": 0.0,
+    "Mean_Return": 10.508476257324219,
+    "Std_Across_Terrains": 0.0,
+    "Worst_Terrain_Return": 10.508476257324219,
+    "Mean_Success_Rate": 0.0,
+    "Worst_Terrain_Success_Rate": 0.0,
+    "Overall_Median_Eval_Return": 10.371286392211914,
+    "Overall_Min_Eval_Return": 9.489974021911621,
+    "Overall_Mean_Episode_Length": 175.0,
+    "Overall_Mean_Success_Steps": null,
+    "Overall_Mean_Return": 10.508476257324219,
+    "Std_Across_Terrain_Means": 0.0,
+    "Robustness_Lambda": 0.5,
+    "Robustness_Score": 10.508476257324219,
+    "A_Width_Ratio": 0.63,
+    "A_Attack_Angle_Deg": 0.0,
+    "A_Actual_Width": 5.3999999999999995,
+    "B_Width_Ratio": 0.63,
+    "B_Attack_Angle_Deg": 0.0,
+    "B_Actual_Width": 5.3999999999999995,
+    "Width_Delta": 0.0,
+    "Attack_Angle_Delta": 0.0,
+    "Scale_Design_Mode": "homogeneous",
+    "Design_Config": "0.63|0|0.63|0",
+    "carpet_Total_Rollouts": 3,
+    "carpet_Valid_Rollouts": 3,
+    "carpet_Reset_Failures": 0,
+    "carpet_Motor_Faults": 0,
+    "carpet_Valid_Rollout_Rate": 1.0,
+    "carpet_Reset_Failure_Rate": 0.0,
+    "carpet_Motor_Fault_Rate": 0.0,
+    "carpet_Mean_Return": 10.508476257324219,
+    "carpet_Std_Return": 0.8928964138031006,
+    "carpet_Median_Return": 10.371286392211914,
+    "carpet_Min_Return": 9.489974021911621,
+    "carpet_Success_Rate": 0.0,
+    "carpet_Mean_Episode_Length": 175.0,
+    "carpet_Mean_Success_Steps": null
+  },
+  "terrain_episode_returns": {
+    "carpet": [
+      11.664168383376127,
+      9.489973901570876,
+      10.37128614585669
+    ]
+  },
+  "terrain_episode_lengths": {
+    "carpet": [
+      175,
+      175,
+      175
+    ]
+  },
+  "terrain_episode_successes": {
+    "carpet": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "terrain_success_steps": {
+    "carpet": []
+  },
+  "terrain_rollout_seeds": {
+    "carpet": [
+      3861712077,
+      3861712208,
+      3861712339
+    ]
+  }
+}
