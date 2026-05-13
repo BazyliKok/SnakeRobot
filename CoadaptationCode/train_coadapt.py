@@ -265,12 +265,12 @@ class Train():
         return env_value.strip().lower() in ('1', 'true', 'yes', 'on')
 
     def _parse_active_terrains(self, raw_value=None):
-        raw_value = os.getenv('SNAKE_ACTIVE_TERRAINS', 'carpet,foam') if raw_value is None else raw_value
+        raw_value = os.getenv('SNAKE_ACTIVE_TERRAINS', 'carpet,cardboard') if raw_value is None else raw_value
         terrain_sequence = [terrain.strip() for terrain in str(raw_value).split(',') if terrain.strip()]
         if not terrain_sequence:
             raise ValueError(
                 "SNAKE_ACTIVE_TERRAINS must name at least one terrain, "
-                "for example 'carpet,foam'."
+                "for example 'carpet,cardboard'."
             )
 
         invalid_terrains = [terrain for terrain in terrain_sequence if terrain not in SnakeEnv.terrains]
