@@ -47,11 +47,11 @@ class SoftActorCriticCoadapt(RLAlgorithm):
 
         # define training parameters
         self._batch_size = int(os.getenv('SNAKE_SAC_BATCH_SIZE', '32'))
-        self._nmbr_ind_updates = int(os.getenv('SNAKE_IND_UPDATES', '40'))
+        self._nmbr_ind_updates = int(os.getenv('SNAKE_IND_UPDATES', '25'))
         self._nmbr_pop_updates = int(os.getenv('SNAKE_POP_UPDATES', '8'))
         self._ind_replay_epochs_per_update = max(
             1.0,
-            float(os.getenv('SNAKE_IND_REPLAY_EPOCHS_PER_UPDATE', '2.0')),
+            float(os.getenv('SNAKE_IND_REPLAY_EPOCHS_PER_UPDATE', '1.0')),
         )
         self._pop_replay_epochs_per_update = max(
             1.0,

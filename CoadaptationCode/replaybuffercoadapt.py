@@ -41,7 +41,7 @@ class CoadaptReplayBuffer(ReplayBuffer):
         )
         self._reward_biased_batch_fraction = float(
             np.clip(
-                float(os.getenv('SNAKE_REWARD_BIASED_BATCH_FRACTION', '0.6')),
+                float(os.getenv('SNAKE_REWARD_BIASED_BATCH_FRACTION', '0.0')),
                 0.0,
                 1.0,
             )
@@ -122,7 +122,7 @@ class CoadaptReplayBuffer(ReplayBuffer):
         if not hasattr(buffer, '_active_terrain_ids'):
             buffer._active_terrain_ids = None
         if not hasattr(buffer, '_reward_biased_batch_fraction'):
-            buffer._reward_biased_batch_fraction = 0.6
+            buffer._reward_biased_batch_fraction = 0.0
         if not hasattr(buffer, '_reward_bias_temperature'):
             buffer._reward_bias_temperature = 0.5
         if not hasattr(buffer, '_reward_bias_step_weight'):

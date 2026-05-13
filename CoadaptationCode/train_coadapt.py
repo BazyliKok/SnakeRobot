@@ -2719,10 +2719,7 @@ class Train():
                 reward_biased_batch_fraction=float(
                     os.getenv(
                         'SNAKE_REWARD_BIASED_BATCH_FRACTION',
-                        metadata.get(
-                            'reward_biased_batch_fraction',
-                            self.replay._reward_biased_batch_fraction,
-                        ),
+                        '0.0',
                     )
                 ),
                 reward_bias_temperature=float(
@@ -2758,10 +2755,7 @@ class Train():
                 float(
                     os.getenv(
                         'SNAKE_IND_REPLAY_EPOCHS_PER_UPDATE',
-                        metadata.get(
-                            'individual_replay_epochs_per_update',
-                            self.rl_alg._ind_replay_epochs_per_update,
-                        ),
+                        '1.0',
                     )
                 ),
             )
@@ -2793,6 +2787,7 @@ class Train():
                 f"repeat_action_perturb_std: {self.repeat_action_perturb_std:.3f}, "
                 f"action_smoothing_beta: {self.action_smoothing_beta:.3f}, "
                 f"reward_biased_batch_fraction: {self.replay._reward_biased_batch_fraction:.3f}, "
+                f"ind_update_cap: {self.rl_alg._nmbr_ind_updates}, "
                 f"ind_replay_epochs: {self.rl_alg._ind_replay_epochs_per_update:.2f}, "
                 f"deterministic rollout start/ramp: "
                 f"{self.deterministic_rollout_start_episode}/{self.deterministic_rollout_ramp_episodes}, "
