@@ -57,10 +57,10 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             1.0,
             float(os.getenv('SNAKE_POP_REPLAY_EPOCHS_PER_UPDATE', '1.0')),
         )
-        ind_policy_lr = float(os.getenv('SNAKE_IND_POLICY_LR', '3e-4'))
-        ind_qf_lr = float(os.getenv('SNAKE_IND_QF_LR', '5e-4'))
-        pop_policy_lr = float(os.getenv('SNAKE_POP_POLICY_LR', '1e-4'))
-        pop_qf_lr = float(os.getenv('SNAKE_POP_QF_LR', '3e-4'))
+        ind_policy_lr = float(os.getenv('SNAKE_IND_POLICY_LR', '1e-3'))
+        ind_qf_lr = float(os.getenv('SNAKE_IND_QF_LR', '1e-3'))
+        pop_policy_lr = float(os.getenv('SNAKE_POP_POLICY_LR', '1e-3'))
+        pop_qf_lr = float(os.getenv('SNAKE_POP_QF_LR', '1e-3'))
         common_trainer_kwargs = dict(
             discount=0.99,
             reward_scale=1.0,
