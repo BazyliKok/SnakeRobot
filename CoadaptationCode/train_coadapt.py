@@ -75,7 +75,7 @@ class Train():
         self.terrain_sequence = self._parse_active_terrains()
         self.training_terrain_block_size = max(
             1,
-            int(os.getenv('SNAKE_EPISODES_PER_TERRAIN', '50')),
+            int(os.getenv('SNAKE_EPISODES_PER_TERRAIN', '40')),
         )
         self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size # number of episodes per design
         default_results_tag = f"scale_ab_{'_'.join(self.terrain_sequence)}"
@@ -1515,6 +1515,29 @@ class Train():
         self.save_networks()
 
         return True
+
+    def _design_for_current_checkpoint(self):
+        design = self.optimized_params
+        if design is None:
+            design_idx = int(self.design_counter)
+            if 0 <= design_idx < len(self.initial_designs):
+                design = self.initial_designs[design_idx]
+        if design is None:
+            design = SnakeEnv.get_current_design()
+        return SnakeEnv._coerce_design_vector(design)
+
+    def run_evaluation_only(self):
+        """Load the current checkpoint state and run deterministic evaluation only."""
+        design = self._design_for_current_checkpoint()
+        SnakeEnv.set_new_design(design)
+        self._print_design_installation_prompt(design)
+        self._ensure_design_training_schedule()
+        print(
+            "Evaluation-only mode: running deterministic evaluation rollouts "
+            "without collecting training episodes or optimizing the design."
+        )
+        self.evaluate_policy()
+        return True
             
             
     def train_single_iteration(self):
@@ -2394,12 +2417,39 @@ class Train():
 
             terrain_changed = requested_terrain_sequence != saved_terrain_sequence
             block_size_changed = requested_training_block_size != saved_training_block_size
+            resume_as_new_terrain_run = self._read_bool_env(
+                'SNAKE_RESUME_AS_NEW_TERRAIN_RUN',
+                default=False,
+            )
+            eval_only = self._read_bool_env('SNAKE_EVAL_ONLY', default=False)
             if (terrain_changed or block_size_changed) and int(self.episode_counter) != 0:
-                raise RuntimeError(
-                    "Changing SNAKE_ACTIVE_TERRAINS or SNAKE_EPISODES_PER_TERRAIN during "
-                    "a design is not supported. Resume at a design boundary where "
-                    "episode_counter == 0, or keep the checkpoint terrain settings."
-                )
+                if eval_only:
+                    print(
+                        "Resuming checkpoint for evaluation-only with an overridden terrain schedule: "
+                        f"saved terrains={saved_terrain_sequence}, saved episodes/terrain={saved_training_block_size}, "
+                        f"saved episode_counter={self.episode_counter}; "
+                        f"eval terrains={requested_terrain_sequence}, eval episodes/terrain={requested_training_block_size}."
+                    )
+                elif not resume_as_new_terrain_run:
+                    raise RuntimeError(
+                        "Changing SNAKE_ACTIVE_TERRAINS or SNAKE_EPISODES_PER_TERRAIN during "
+                        "a design is not supported by default. Resume at a design boundary where "
+                        "episode_counter == 0, keep the checkpoint terrain settings, or set "
+                        "SNAKE_RESUME_AS_NEW_TERRAIN_RUN=1 to intentionally load the checkpoint "
+                        "weights/replay and start a new terrain schedule from episode 0, or set "
+                        "SNAKE_EVAL_ONLY=1 to evaluate a checkpoint on the requested terrains."
+                    )
+                else:
+                    print(
+                        "Resuming checkpoint as a new terrain run: "
+                        f"saved terrains={saved_terrain_sequence}, saved episodes/terrain={saved_training_block_size}, "
+                        f"saved episode_counter={self.episode_counter}; "
+                        f"new terrains={requested_terrain_sequence}, new episodes/terrain={requested_training_block_size}. "
+                        "The loaded networks/replay are preserved, and the training episode counter is reset to 0 "
+                        "for the new terrain schedule."
+                    )
+                    self.episode_counter = 0
+                    self._last_individual_reset_key = None
 
             self.terrain_sequence = requested_terrain_sequence
             self.training_terrain_block_size = requested_training_block_size
@@ -2778,6 +2828,8 @@ class Train():
             print(f"restored design_counter={self.design_counter}, episode_counter={self.episode_counter}")
             print(
                 "resume training knobs -> "
+                f"active terrains: {','.join(self.terrain_sequence)}, "
+                f"episodes/terrain: {self.training_terrain_block_size}, "
                 f"population start design: {self.population_training_start_design}, "
                 f"terrain prefill episodes: {self.terrain_prefill_episodes}, "
                 f"policy warmup episodes: {self.policy_action_warmup_episodes}, "
@@ -3152,10 +3204,17 @@ if __name__ == '__main__':
         designs_per_run = max(1, int(designs_per_run_env))
         print(f'Design cycles per run: {designs_per_run}')
 
+    eval_only = trainingObj._read_bool_env("SNAKE_EVAL_ONLY", default=False)
+    if eval_only:
+        print("Evaluation-only mode enabled.")
+
     # run threads as before
     motorThread = threading.Thread(target=trainingObj.motorPos, args=(stopEvent,), daemon=True) 
     optiThread = threading.Thread(target=trainingObj.optiPos, args=(stopEvent,), daemon=True)
-    trainingloopThread = threading.Thread(target=trainingObj.run, args=(stopEvent, designs_per_run))
+    if eval_only:
+        trainingloopThread = threading.Thread(target=trainingObj.run_evaluation_only)
+    else:
+        trainingloopThread = threading.Thread(target=trainingObj.run, args=(stopEvent, designs_per_run))
 
     try:
         motorThread.start()
