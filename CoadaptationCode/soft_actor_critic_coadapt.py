@@ -31,19 +31,39 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         super().__init__(env, replay, networks)
         ptu.set_gpu_mode(False) 
 
-        # define networks for individual
-        self._ind_qf1 = networks['individual']['qf1']
-        self._ind_qf2 = networks['individual']['qf2']
-        self._ind_qf1_target = networks['individual']['qf1_target']
-        self._ind_qf2_target = networks['individual']['qf2_target']
-        self._ind_policy = networks['individual']['policy']
+        self._terrain_model_mode = str(
+            networks.get(
+                'terrain_model_mode',
+                os.getenv('SNAKE_TERRAIN_MODEL_MODE', 'separate'),
+            )
+        ).strip().lower()
+        if self._terrain_model_mode not in ('separate', 'shared'):
+            raise ValueError(
+                "SNAKE_TERRAIN_MODEL_MODE must be either 'separate' or 'shared'."
+            )
 
-        # define networks for policy
-        self._pop_qf1 = networks['population']['qf1']
-        self._pop_qf2 = networks['population']['qf2']
-        self._pop_qf1_target = networks['population']['qf1_target']
-        self._pop_qf2_target = networks['population']['qf2_target']
-        self._pop_policy = networks['population']['policy']
+        self._terrain_names = list(networks.get('terrain_names') or ['default'])
+        self._active_terrain = self._terrain_names[0]
+
+        if self._terrain_model_mode == 'separate':
+            networks.setdefault('individual_by_terrain', {})
+            networks.setdefault('population_by_terrain', {})
+            for terrain in self._terrain_names:
+                if terrain not in networks['individual_by_terrain']:
+                    networks['individual_by_terrain'][terrain] = self._create_networks(env=self._env)
+                if terrain not in networks['population_by_terrain']:
+                    networks['population_by_terrain'][terrain] = self._create_networks(env=self._env)
+            networks['individual'] = networks['individual_by_terrain'][self._active_terrain]
+            networks['population'] = networks['population_by_terrain'][self._active_terrain]
+        else:
+            networks.setdefault('individual_by_terrain', {'shared': networks['individual']})
+            networks.setdefault('population_by_terrain', {'shared': networks['population']})
+            self._active_terrain = 'shared'
+
+        self._individual_networks_by_terrain = networks['individual_by_terrain']
+        self._population_networks_by_terrain = networks['population_by_terrain']
+        self._ind_algorithms_by_terrain = {}
+        self._pop_algorithms_by_terrain = {}
 
         # define training parameters
         self._batch_size = int(os.getenv('SNAKE_SAC_BATCH_SIZE', '32'))
@@ -84,38 +104,133 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             qf_lr=pop_qf_lr,
         )
 
-        # set up trainer 
-        self._ind_algorithm = self._build_trainer(
-            policy=self._ind_policy,
-            qf1=self._ind_qf1,
-            qf2=self._ind_qf2,
-            target_qf1=self._ind_qf1_target,
-            target_qf2=self._ind_qf2_target,
-            trainer_kwargs=self._ind_sac_trainer_kwargs,
-        )
-
-        self._pop_algorithm = self._build_trainer(
-            policy=self._pop_policy,
-            qf1=self._pop_qf1,
-            qf2=self._pop_qf2,
-            target_qf1=self._pop_qf1_target,
-            target_qf2=self._pop_qf2_target,
-            trainer_kwargs=self._pop_sac_trainer_kwargs,
-        )
+        self._bind_active_terrain(self._active_terrain)
+        self._ensure_trainers(self._active_terrain)
 
         self.last_ind_diagnostics = {}
         self.last_pop_diagnostics = {}
+
+    def _new_network_group(self):
+        return self._create_networks(env=self._env)
+
+    def _ensure_terrain_networks(self, terrain_name):
+        terrain_name = str(terrain_name)
+        if self._terrain_model_mode == 'shared':
+            terrain_name = 'shared'
+        if terrain_name not in self._individual_networks_by_terrain:
+            self._individual_networks_by_terrain[terrain_name] = self._new_network_group()
+        if terrain_name not in self._population_networks_by_terrain:
+            self._population_networks_by_terrain[terrain_name] = self._new_network_group()
+        if terrain_name not in self._terrain_names:
+            self._terrain_names.append(terrain_name)
+            self._networks['terrain_names'] = list(self._terrain_names)
+        return terrain_name
+
+    def _bind_active_terrain(self, terrain_name):
+        terrain_name = self._ensure_terrain_networks(terrain_name)
+        self._active_terrain = terrain_name
+        self._networks['individual'] = self._individual_networks_by_terrain[terrain_name]
+        self._networks['population'] = self._population_networks_by_terrain[terrain_name]
+
+        self._ind_qf1 = self._networks['individual']['qf1']
+        self._ind_qf2 = self._networks['individual']['qf2']
+        self._ind_qf1_target = self._networks['individual']['qf1_target']
+        self._ind_qf2_target = self._networks['individual']['qf2_target']
+        self._ind_policy = self._networks['individual']['policy']
+
+        self._pop_qf1 = self._networks['population']['qf1']
+        self._pop_qf2 = self._networks['population']['qf2']
+        self._pop_qf1_target = self._networks['population']['qf1_target']
+        self._pop_qf2_target = self._networks['population']['qf2_target']
+        self._pop_policy = self._networks['population']['policy']
+
+        self._ind_algorithm = self._ind_algorithms_by_terrain.get(terrain_name)
+        self._pop_algorithm = self._pop_algorithms_by_terrain.get(terrain_name)
+        return terrain_name
+
+    def _build_individual_trainer_for_terrain(self, terrain_name):
+        networks = self._individual_networks_by_terrain[terrain_name]
+        return self._build_trainer(
+            policy=networks['policy'],
+            qf1=networks['qf1'],
+            qf2=networks['qf2'],
+            target_qf1=networks['qf1_target'],
+            target_qf2=networks['qf2_target'],
+            trainer_kwargs=self._ind_sac_trainer_kwargs,
+        )
+
+    def _build_population_trainer_for_terrain(self, terrain_name):
+        networks = self._population_networks_by_terrain[terrain_name]
+        return self._build_trainer(
+            policy=networks['policy'],
+            qf1=networks['qf1'],
+            qf2=networks['qf2'],
+            target_qf1=networks['qf1_target'],
+            target_qf2=networks['qf2_target'],
+            trainer_kwargs=self._pop_sac_trainer_kwargs,
+        )
+
+    def _ensure_trainers(self, terrain_name):
+        terrain_name = self._ensure_terrain_networks(terrain_name)
+        if terrain_name not in self._ind_algorithms_by_terrain:
+            self._ind_algorithms_by_terrain[terrain_name] = self._build_individual_trainer_for_terrain(terrain_name)
+        if terrain_name not in self._pop_algorithms_by_terrain:
+            self._pop_algorithms_by_terrain[terrain_name] = self._build_population_trainer_for_terrain(terrain_name)
+        self._bind_active_terrain(terrain_name)
+
+    def set_active_terrain(self, terrain_name, reset_individual=False, reset_population=False):
+        terrain_name = self._ensure_terrain_networks(terrain_name)
+        if reset_individual:
+            self._individual_networks_by_terrain[terrain_name] = self._new_network_group()
+            self._networks['individual_by_terrain'] = self._individual_networks_by_terrain
+            self._ind_algorithms_by_terrain[terrain_name] = self._build_individual_trainer_for_terrain(terrain_name)
+        if reset_population:
+            self._population_networks_by_terrain[terrain_name] = self._new_network_group()
+            self._networks['population_by_terrain'] = self._population_networks_by_terrain
+            self._pop_algorithms_by_terrain[terrain_name] = self._build_population_trainer_for_terrain(terrain_name)
+
+        self._ensure_trainers(terrain_name)
+        return terrain_name
+
+    def get_terrain_networks(self, role, terrains=None):
+        if role == 'individual':
+            source = self._individual_networks_by_terrain
+        elif role == 'population':
+            source = self._population_networks_by_terrain
+        else:
+            raise ValueError(f"Unknown network role: {role}")
+
+        if terrains is None:
+            return dict(source)
+        result = {}
+        for terrain in terrains:
+            terrain = self._ensure_terrain_networks(terrain)
+            result[terrain] = source[terrain]
+        return result
+
+    def individual_terrains_available(self):
+        return sorted(self._individual_networks_by_terrain.keys())
+
+    def population_terrains_available(self):
+        return sorted(self._population_networks_by_terrain.keys())
         
 
     def set_target_entropy(self, target_entropy):
-        if hasattr(self._ind_algorithm, 'set_target_entropy'):
-            self._ind_algorithm.set_target_entropy(target_entropy)
-        if hasattr(self._pop_algorithm, 'set_target_entropy'):
-            self._pop_algorithm.set_target_entropy(target_entropy)
         self._ind_sac_trainer_kwargs['target_entropy'] = float(target_entropy)
         self._pop_sac_trainer_kwargs['target_entropy'] = float(target_entropy)
+        for algorithm in self._ind_algorithms_by_terrain.values():
+            if hasattr(algorithm, 'set_target_entropy'):
+                algorithm.set_target_entropy(target_entropy)
+        for algorithm in self._pop_algorithms_by_terrain.values():
+            if hasattr(algorithm, 'set_target_entropy'):
+                algorithm.set_target_entropy(target_entropy)
     
-    def episode_init(self, copy_population_to_individual=True):
+    def episode_init(
+            self,
+            copy_population_to_individual=True,
+            terrain_name=None,
+            reset_individual=False,
+    ):
            
         """Initialize the individual trainer for a fresh adaptation phase.
 
@@ -123,20 +238,20 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         start from the current population networks before adapting locally.
         """
         ptu.set_gpu_mode(False)
-        self._ind_algorithm = self._build_trainer(
-            policy=self._ind_policy,
-            qf1=self._ind_qf1,
-            qf2=self._ind_qf2,
-            target_qf1=self._ind_qf1_target,
-            target_qf2=self._ind_qf2_target,
-            trainer_kwargs=self._ind_sac_trainer_kwargs,
-        )
+        if terrain_name is not None:
+            self.set_active_terrain(terrain_name, reset_individual=reset_individual)
+        elif reset_individual:
+            self.set_active_terrain(self._active_terrain, reset_individual=True)
+        else:
+            self._ensure_trainers(self._active_terrain)
 
         if copy_population_to_individual:
             print('Copying population networks into individual networks')
             utils.copy_pop_to_ind(networks_pop=self._networks['population'], networks_ind=self._networks['individual'])
+            self._ind_algorithms_by_terrain[self._active_terrain] = self._build_individual_trainer_for_terrain(self._active_terrain)
+            self._bind_active_terrain(self._active_terrain)
         else:
-            print('Keeping individual networks')
+            print(f'Keeping individual networks for terrain {self._active_terrain}')
 
     def _build_trainer(self, policy, qf1, qf2, target_qf1, target_qf2, trainer_kwargs):
         return SACTrainer(
@@ -150,11 +265,13 @@ class SoftActorCriticCoadapt(RLAlgorithm):
         )
         
   
-    def single_train_step(self, train_ind=True, train_pop=False):
+    def single_train_step(self, train_ind=True, train_pop=False, terrain_name=None):
         """
             single step in the training
         """
         ptu.set_gpu_mode(False)
+        if terrain_name is not None:
+            self.set_active_terrain(terrain_name)
         self.trainQ1losses = []
         self.trainQ2losses = []
         self.trainPolicylosses = []
@@ -233,7 +350,7 @@ class SoftActorCriticCoadapt(RLAlgorithm):
 
 
     @staticmethod
-    def create_networks(env):
+    def create_networks(env, terrain_names=None, terrain_model_mode=None):
         """ Creates all networks necessary for SAC.
 
         These networks have to be created before instantiating this class and
@@ -243,10 +360,49 @@ class SoftActorCriticCoadapt(RLAlgorithm):
             A dictonary which contains the networks.
         """
         ptu.set_gpu_mode(False)
-        network_dict = {
-            'individual' : SoftActorCriticCoadapt._create_networks(env=env),
-            'population' : SoftActorCriticCoadapt._create_networks(env=env),    
+        terrain_model_mode = str(
+            terrain_model_mode or os.getenv('SNAKE_TERRAIN_MODEL_MODE', 'separate')
+        ).strip().lower()
+        if terrain_model_mode not in ('separate', 'shared'):
+            raise ValueError(
+                "SNAKE_TERRAIN_MODEL_MODE must be either 'separate' or 'shared'."
+            )
+
+        if terrain_names is None:
+            terrain_names = [
+                terrain.strip()
+                for terrain in os.getenv('SNAKE_ACTIVE_TERRAINS', 'carpet,cardboard').split(',')
+                if terrain.strip()
+            ]
+        terrain_names = list(terrain_names or ['default'])
+
+        if terrain_model_mode == 'separate':
+            individual_by_terrain = {
+                terrain: SoftActorCriticCoadapt._create_networks(env=env)
+                for terrain in terrain_names
             }
+            population_by_terrain = {
+                terrain: SoftActorCriticCoadapt._create_networks(env=env)
+                for terrain in terrain_names
+            }
+            active_terrain = terrain_names[0]
+            network_dict = {
+                'terrain_model_mode': terrain_model_mode,
+                'terrain_names': terrain_names,
+                'individual_by_terrain': individual_by_terrain,
+                'population_by_terrain': population_by_terrain,
+                'individual': individual_by_terrain[active_terrain],
+                'population': population_by_terrain[active_terrain],
+            }
+        else:
+            network_dict = {
+                'terrain_model_mode': terrain_model_mode,
+                'terrain_names': ['shared'],
+                'individual' : SoftActorCriticCoadapt._create_networks(env=env),
+                'population' : SoftActorCriticCoadapt._create_networks(env=env),
+            }
+            network_dict['individual_by_terrain'] = {'shared': network_dict['individual']}
+            network_dict['population_by_terrain'] = {'shared': network_dict['population']}
         
         return network_dict
   

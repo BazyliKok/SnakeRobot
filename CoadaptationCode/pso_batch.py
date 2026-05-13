@@ -124,12 +124,15 @@ class PSO_batch(Design_Optimization):
         terrain_state_batches = _terrain_state_batches()
 
         def _deterministic_actions(observation_tensor):
+            return _deterministic_actions_for_policy(policy_network, observation_tensor)
+
+        def _deterministic_actions_for_policy(policy, observation_tensor):
             deterministic_forward = False
             try:
-                policy_output = policy_network(observation_tensor, deterministic=True)
+                policy_output = policy(observation_tensor, deterministic=True)
                 deterministic_forward = True
             except TypeError:
-                policy_output = policy_network(observation_tensor)
+                policy_output = policy(observation_tensor)
 
             if isinstance(policy_output, (tuple, list)):
                 if deterministic_forward and len(policy_output) > 0 and torch.is_tensor(policy_output[0]):
@@ -149,18 +152,27 @@ class PSO_batch(Design_Optimization):
                     mean_action = torch.tanh(mean_action)
                 return mean_action
 
-            if hasattr(policy_network, 'get_action'):
+            if hasattr(policy, 'get_action'):
                 actions = []
                 for obs in observation_tensor:
                     obs_np = obs.detach().cpu().numpy()
                     try:
-                        action, _ = policy_network.get_action(obs_np, deterministic=True)
+                        action, _ = policy.get_action(obs_np, deterministic=True)
                     except TypeError:
-                        action, _ = policy_network.get_action(obs_np)
+                        action, _ = policy.get_action(obs_np)
                     actions.append(action)
                 return torch.as_tensor(np.asarray(actions), device=observation_tensor.device, dtype=torch.float32)
 
             raise TypeError(f'Unsupported policy output type for deterministic PSO actions: {type(policy_output)}')
+
+        def _network_for_terrain(network_or_map, terrain_name):
+            if isinstance(network_or_map, dict):
+                if terrain_name in network_or_map:
+                    return network_or_map[terrain_name]
+                if network_or_map:
+                    return next(iter(network_or_map.values()))
+                raise ValueError("Terrain network map is empty.")
+            return network_or_map
 
         def f_qval(x_input, **kwargs):
             shape = x_input.shape
@@ -174,12 +186,14 @@ class PSO_batch(Design_Optimization):
                         continue
 
                     terrain_returns = []
-                    for _terrain_name, terrain_state_batch in terrain_state_batches:
+                    for terrain_name, terrain_state_batch in terrain_state_batches:
                         state_batch = _inject_design(terrain_state_batch, full_design)
+                        terrain_q_network = _network_for_terrain(q_network, terrain_name)
+                        terrain_policy_network = _network_for_terrain(policy_network, terrain_name)
 
                         network_input = torch.from_numpy(state_batch).to(device=ptu.device, dtype=torch.float32)
-                        action = _deterministic_actions(network_input)
-                        output = q_network(network_input, action)
+                        action = _deterministic_actions_for_policy(terrain_policy_network, network_input)
+                        output = terrain_q_network(network_input, action)
                         terrain_returns.append(float(output.mean().item()))
 
                     terrain_returns = np.asarray(terrain_returns, dtype=np.float32)

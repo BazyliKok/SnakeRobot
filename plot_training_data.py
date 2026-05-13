@@ -63,7 +63,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prefix",
         default=None,
-        help="Date/file prefix to search for, for example 2026_04_16.",
+        help=(
+            "Date/file prefix or full run label to search for, for example "
+            "2026_04_16 or 2026_05_13_DesignCycle0_cardboard_from_carpet40."
+        ),
     )
     parser.add_argument(
         "--reward-file",
@@ -101,41 +104,98 @@ def valid_log_files(pattern: str) -> list[Path]:
     ]
 
 
-def log_prefix_from_path(path: Path, kind: str) -> str | None:
-    name = path.name
-    if kind not in name:
+def log_parts_from_path(path: Path, kind: str) -> tuple[str, str] | None:
+    stem = path.stem
+    if kind not in stem:
         return None
-    return name.split(kind, maxsplit=1)[0]
+    before, after = stem.split(kind, maxsplit=1)
+    return before, after
 
 
-def discover_latest_log_prefix() -> str:
+def log_label_from_path(path: Path, kind: str) -> str | None:
+    parts = log_parts_from_path(path, kind)
+    if parts is None:
+        return None
+
+    before, after = parts
+    if after:
+        return f"{before.rstrip('_')}_{after.lstrip('_')}".strip("_")
+    return before.rstrip("_")
+
+
+def find_log_file_by_label(label: str, kind: str) -> list[Path]:
+    return [
+        path
+        for path in valid_log_files(f"*{kind}*")
+        if log_label_from_path(path, kind) == label
+    ]
+
+
+def paired_loss_file(reward_file: Path) -> Path:
+    label = log_label_from_path(reward_file, "Rewards")
+    if label is None:
+        raise ValueError(
+            "Could not infer a loss file from --reward-file. "
+            "Please pass --loss-file as well."
+        )
+
+    matches = find_log_file_by_label(label, "Losses")
+    if not matches:
+        raise FileNotFoundError(f"No loss file found for reward run {label}")
+    if len(matches) > 1:
+        names = ", ".join(path.name for path in matches)
+        raise ValueError(f"Multiple loss files match reward run {label}: {names}")
+    return matches[0]
+
+
+def discover_latest_log_label() -> str:
     reward_files = valid_log_files("*Rewards*")
-    prefixes = sorted(
-        {
-            prefix
-            for reward_file in reward_files
-            if (prefix := log_prefix_from_path(reward_file, "Rewards")) is not None
-            and valid_log_files(f"{prefix}Losses*")
-        }
-    )
-    if not prefixes:
+    paired_runs = []
+    for reward_file in reward_files:
+        label = log_label_from_path(reward_file, "Rewards")
+        if label is None:
+            continue
+        losses = find_log_file_by_label(label, "Losses")
+        if len(losses) != 1:
+            continue
+        updated_at = max(reward_file.stat().st_mtime, losses[0].stat().st_mtime)
+        paired_runs.append((updated_at, label))
+
+    if not paired_runs:
         raise FileNotFoundError(
             "No paired Rewards/Losses files found in the current folder."
         )
-    return prefixes[-1]
+    return sorted(paired_runs)[-1][1]
 
 
 def find_log_file(prefix: str, kind: str) -> Path:
-    matches = valid_log_files(f"{prefix}{kind}*")
+    matches = find_log_file_by_label(prefix, kind)
+    if not matches:
+        matches = valid_log_files(f"{prefix}{kind}*")
     if not matches:
         raise FileNotFoundError(f"No file found matching {prefix}{kind}*")
     if len(matches) > 1:
         names = ", ".join(path.name for path in matches)
-        raise ValueError(f"Multiple {kind.lower()} files match {prefix}: {names}")
+        labels = sorted(
+            {
+                label
+                for path in matches
+                if (label := log_label_from_path(path, kind)) is not None
+            }
+        )
+        hint = ""
+        if labels:
+            hint = f" Use a full run label with --prefix, for example: {labels[0]}"
+        raise ValueError(
+            f"Multiple {kind.lower()} files match {prefix}: {names}.{hint}"
+        )
     return matches[0]
 
 
 def output_name_from_reward_file(reward_file: Path) -> str:
+    if label := log_label_from_path(reward_file, "Rewards"):
+        return label
+
     name = reward_file.stem if reward_file.suffix else reward_file.name
     if "Rewards" in name:
         before, after = name.split("Rewards", maxsplit=1)
@@ -1118,18 +1178,12 @@ def main() -> None:
     args = parse_args()
     if args.reward_file:
         reward_file = args.reward_file
-        prefix = log_prefix_from_path(reward_file, "Rewards")
         if args.loss_file:
             loss_file = args.loss_file
-        elif prefix is not None:
-            loss_file = find_log_file(prefix, "Losses")
         else:
-            raise ValueError(
-                "Could not infer a loss file from --reward-file. "
-                "Please pass --loss-file as well."
-            )
+            loss_file = paired_loss_file(reward_file)
     else:
-        prefix = args.prefix or discover_latest_log_prefix()
+        prefix = args.prefix or discover_latest_log_label()
         reward_file = find_log_file(prefix, "Rewards")
         loss_file = args.loss_file or find_log_file(prefix, "Losses")
 

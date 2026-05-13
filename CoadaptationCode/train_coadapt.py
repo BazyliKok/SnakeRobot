@@ -73,6 +73,11 @@ class Train():
         self.design_mode = os.getenv('SNAKE_SCALE_DESIGN_MODE', 'homogeneous').strip().lower()
         self.initial_designs = SnakeEnv.get_init_design_parameters(self.design_mode)
         self.terrain_sequence = self._parse_active_terrains()
+        self.terrain_model_mode = os.getenv('SNAKE_TERRAIN_MODEL_MODE', 'separate').strip().lower()
+        if self.terrain_model_mode not in ('separate', 'shared'):
+            raise ValueError(
+                "SNAKE_TERRAIN_MODEL_MODE must be either 'separate' or 'shared'."
+            )
         self.training_terrain_block_size = max(
             1,
             int(os.getenv('SNAKE_EPISODES_PER_TERRAIN', '40')),
@@ -99,6 +104,18 @@ class Train():
             'SNAKE_LEGACY_CHECKPOINT_PREFIX',
             '2025_03_17-12_46_29_Design3_ep52',
         )
+        self.ignored_replay_tags = self._parse_csv_env(
+            'SNAKE_IGNORED_REPLAY_TAGS',
+            default='cardboard_from_carpet40',
+        )
+        self.allow_ignored_replay_tags = self._read_bool_env(
+            'SNAKE_ALLOW_IGNORED_REPLAY_TAGS',
+            default=False,
+        )
+        self.resume_completed_terrain_blocks = self._read_bool_env(
+            'SNAKE_RESUME_COMPLETED_TERRAIN_BLOCKS',
+            default=True,
+        )
         self.terrain_name_to_id = dict(SnakeEnv.terrain_name_to_id)
         self.training_terrain_block_order = []
         self.training_episode_schedule = []
@@ -114,8 +131,13 @@ class Train():
         self.current_update_seed = None
         self.current_design_optimization_seed = None
         self._last_individual_reset_key = None
+        self._individual_design_terrain_keys = set()
         self.resume_checkpoint_prefix = None
         self.run_start_episode = 0
+        self.bootstrap_individual_from_terrain_population = self._read_bool_env(
+            'SNAKE_BOOTSTRAP_INDIVIDUAL_FROM_TERRAIN_POPULATION',
+            default=True,
+        )
 
         # Keep some exploration for fresh runs. The continuous scale-parameter
         # experiment intentionally starts from scratch by default.
@@ -237,14 +259,21 @@ class Train():
             max_replay_buffer_size_species=int(1e6),
             max_replay_buffer_size_population=int(1e7),
             env= self.env,
-            env_info_sizes=None
+            env_info_sizes=None,
+            terrain_model_mode=self.terrain_model_mode,
+            terrain_name_to_id=self.terrain_name_to_id,
+            terrain_names=self.terrain_sequence,
         )
         self._refresh_active_terrain_filter()
         self._seed_global_rngs('initialization')
 
         # set up RL algorithm
         self.rl_method = SoftActorCriticCoadapt
-        self.networks = self.rl_method.create_networks(env=self.env)
+        self.networks = self.rl_method.create_networks(
+            env=self.env,
+            terrain_names=self.terrain_sequence,
+            terrain_model_mode=self.terrain_model_mode,
+        )
         self.rl_alg = self.rl_method(env=self.env, replay=self.replay, networks=self.networks)
         if self.use_legacy_policy_warm_start:
             self.warm_start_from_legacy_checkpoint()
@@ -263,6 +292,14 @@ class Train():
         if env_value is None:
             return default
         return env_value.strip().lower() in ('1', 'true', 'yes', 'on')
+
+    def _parse_csv_env(self, name, default=''):
+        raw_value = os.getenv(name, default)
+        return [
+            value.strip()
+            for value in str(raw_value).split(',')
+            if value.strip()
+        ]
 
     def _parse_active_terrains(self, raw_value=None):
         raw_value = os.getenv('SNAKE_ACTIVE_TERRAINS', 'carpet,cardboard') if raw_value is None else raw_value
@@ -286,7 +323,49 @@ class Train():
 
     def _refresh_active_terrain_filter(self):
         if hasattr(self, 'replay') and self.replay is not None:
+            if hasattr(self.replay, 'configure_terrains'):
+                self.replay.configure_terrains(
+                    terrain_name_to_id=self.terrain_name_to_id,
+                    terrain_names=self.terrain_sequence,
+                )
             self.replay.set_active_terrain_ids(self._active_terrain_ids())
+
+    def _activate_terrain_models(self, terrain, terrain_idx=None, reset_individual=False):
+        if terrain_idx is None:
+            terrain_idx = self.terrain_name_to_id[terrain]
+        if hasattr(self.replay, 'set_active_terrain'):
+            self.replay.set_active_terrain(terrain, terrain_idx)
+        if hasattr(self.rl_alg, 'set_active_terrain'):
+            self.rl_alg.set_active_terrain(terrain, reset_individual=reset_individual)
+        self.networks['individual'] = self.rl_alg._networks['individual']
+        self.networks['population'] = self.rl_alg._networks['population']
+
+    def _population_networks_for_active_terrains(self):
+        if hasattr(self.rl_alg, 'get_terrain_networks'):
+            terrain_networks = self.rl_alg.get_terrain_networks(
+                'population',
+                terrains=self.terrain_sequence,
+            )
+            q_networks = {
+                terrain: self.rl_alg.get_q_network(networks)
+                for terrain, networks in terrain_networks.items()
+            }
+            policy_networks = {
+                terrain: self.rl_alg.get_policy_network(networks)
+                for terrain, networks in terrain_networks.items()
+            }
+            return q_networks, policy_networks
+
+        q_network = self.rl_alg.get_q_network(self.networks['population'])
+        policy_network = self.rl_alg.get_policy_network(self.networks['population'])
+        return q_network, policy_network
+
+    def _terrain_individual_replay_size(self, terrain):
+        buffers = getattr(self.replay, '_individual_buffers', None)
+        if buffers is not None and terrain in buffers:
+            return int(buffers[terrain]._size)
+        buffer = getattr(self.replay, '_individual_buffer', None)
+        return int(buffer._size) if buffer is not None else 0
 
     def _scale_design_summary_fields(self, design=None):
         design = SnakeEnv._coerce_design_vector(SnakeEnv.get_current_design() if design is None else design)
@@ -361,7 +440,10 @@ class Train():
         return action
 
     def _should_use_policy_actions(self):
-        episode_idx = 0 if self.episode_counter is None else int(self.episode_counter)
+        episode_idx = (
+            0 if self.current_training_episode_in_block is None
+            else int(self.current_training_episode_in_block)
+        )
         return episode_idx >= self.policy_action_warmup_episodes
 
     def _should_train_updates(self):
@@ -373,7 +455,10 @@ class Train():
             0 if self.current_training_episode_in_block is None
             else int(self.current_training_episode_in_block)
         )
-        return episode_in_block >= self.terrain_prefill_episodes
+        return episode_in_block >= max(
+            self.terrain_prefill_episodes,
+            self.training_update_warmup_episodes,
+        )
 
     def _is_terrain_prefill_episode(self):
         episode_in_block = (
@@ -608,54 +693,67 @@ class Train():
         ])[:active_size]
 
     def _training_rollouts_from_population_replay(self):
-        buffer = self.replay._population_buffer
-        active_indices = self._active_replay_indices(buffer)
-        if len(active_indices) == 0:
-            return []
+        def _rollouts_from_buffer(buffer):
+            active_indices = self._active_replay_indices(buffer)
+            if len(active_indices) == 0:
+                return []
 
-        terrain_info = None
-        if 'terrain_id' in buffer._env_info_keys:
-            terrain_info = buffer._env_infos['terrain_id'].reshape(-1)
+            terrain_info = None
+            if 'terrain_id' in buffer._env_info_keys:
+                terrain_info = buffer._env_infos['terrain_id'].reshape(-1)
 
-        rollouts = []
-        current_return = 0.0
-        current_length = 0
-        current_terrain_id = None
-
-        def _finish_rollout():
-            nonlocal current_return, current_length, current_terrain_id
-            if current_length <= 0:
-                return
-            terrain_id = -1 if current_terrain_id is None else int(current_terrain_id)
-            rollouts.append({
-                'terrain_id': terrain_id,
-                'terrain': SnakeEnv.terrain_id_to_name.get(terrain_id, 'unknown'),
-                'return': float(current_return),
-                'length': int(current_length),
-            })
+            rollouts = []
             current_return = 0.0
             current_length = 0
             current_terrain_id = None
 
-        for idx in active_indices:
-            terrain_id = -1
-            if terrain_info is not None:
-                terrain_id = int(terrain_info[idx])
+            def _finish_rollout():
+                nonlocal current_return, current_length, current_terrain_id
+                if current_length <= 0:
+                    return
+                terrain_id = -1 if current_terrain_id is None else int(current_terrain_id)
+                rollouts.append({
+                    'terrain_id': terrain_id,
+                    'terrain': SnakeEnv.terrain_id_to_name.get(terrain_id, 'unknown'),
+                    'return': float(current_return),
+                    'length': int(current_length),
+                })
+                current_return = 0.0
+                current_length = 0
+                current_terrain_id = None
 
-            if current_length > 0 and current_terrain_id != terrain_id:
-                _finish_rollout()
+            for idx in active_indices:
+                terrain_id = -1
+                if terrain_info is not None:
+                    terrain_id = int(terrain_info[idx])
 
-            if current_terrain_id is None:
-                current_terrain_id = terrain_id
+                if current_length > 0 and current_terrain_id != terrain_id:
+                    _finish_rollout()
 
-            current_return += float(buffer._rewards[idx].reshape(-1)[0])
-            current_length += 1
+                if current_terrain_id is None:
+                    current_terrain_id = terrain_id
 
-            if bool(buffer._terminals[idx].reshape(-1)[0]):
-                _finish_rollout()
+                current_return += float(buffer._rewards[idx].reshape(-1)[0])
+                current_length += 1
 
-        _finish_rollout()
-        return rollouts[-self.episode_iterations:]
+                if bool(buffer._terminals[idx].reshape(-1)[0]):
+                    _finish_rollout()
+
+            _finish_rollout()
+            return rollouts
+
+        if (
+            getattr(self.replay, '_terrain_model_mode', 'shared') == 'separate'
+            and hasattr(self.replay, '_population_buffers')
+        ):
+            rollouts = []
+            for terrain in self.terrain_sequence:
+                buffer = self.replay._population_buffers.get(terrain)
+                if buffer is not None:
+                    rollouts.extend(_rollouts_from_buffer(buffer))
+            return rollouts[-self.episode_iterations:]
+
+        return _rollouts_from_buffer(self.replay._population_buffer)[-self.episode_iterations:]
 
     def _summarize_training_performance(self):
         rollouts = self._training_rollouts_from_population_replay()
@@ -1147,6 +1245,7 @@ class Train():
                 self.design_counter,
                 self.episode_counter,
             )
+            self._activate_terrain_models(terrain, terrain_idx, reset_individual=False)
             SnakeEnv.set_current_terrain(terrain)
             print(
                 f"CURRENT TERRAIN: {terrain} "
@@ -1390,7 +1489,14 @@ class Train():
 
         """
         if not self._reset_individual_for_terrain_block_if_needed():
-            self.rl_alg.episode_init(copy_population_to_individual=False)
+            episode_idx = 0 if self.episode_counter is None else int(self.episode_counter)
+            terrain, terrain_idx, _block_idx, _episode_in_block = self._get_training_terrain_for_episode(episode_idx)
+            self._activate_terrain_models(terrain, terrain_idx, reset_individual=False)
+            self.rl_alg.episode_init(
+                copy_population_to_individual=False,
+                terrain_name=terrain,
+                reset_individual=False,
+            )
 
 
         self.data_rewards = []
@@ -1398,20 +1504,54 @@ class Train():
     def _reset_individual_for_terrain_block_if_needed(self):
         episode_idx = 0 if self.episode_counter is None else int(self.episode_counter)
         block_size = max(1, int(self.training_terrain_block_size))
+        terrain, terrain_idx, block_idx, _episode_in_block = self._get_training_terrain_for_episode(episode_idx)
+        self._activate_terrain_models(terrain, terrain_idx, reset_individual=False)
         if episode_idx % block_size != 0:
             return False
 
-        block_idx = episode_idx // block_size
-        reset_key = (int(self.design_counter), int(block_idx))
+        reset_key = (int(self.design_counter), int(block_idx), str(terrain))
         if reset_key == self._last_individual_reset_key:
             return False
 
-        print(
-            f"Resetting individual policy from population for design cycle "
-            f"{self.design_counter}, terrain block {block_idx + 1}."
-        )
-        self.rl_alg.episode_init(copy_population_to_individual=True)
-        self.replay.reset_individual_buffer()
+        if self.terrain_model_mode == 'shared':
+            print(
+                f"Resetting shared individual policy from population for design cycle "
+                f"{self.design_counter}, terrain block {block_idx + 1}."
+            )
+            self.rl_alg.episode_init(copy_population_to_individual=True)
+            self.replay.reset_individual_buffer()
+        else:
+            design_terrain_key = (int(self.design_counter), str(terrain))
+            reset_fresh = design_terrain_key not in self._individual_design_terrain_keys
+            if reset_fresh:
+                bootstrap_message = (
+                    "copying same-terrain population into it"
+                    if self.bootstrap_individual_from_terrain_population
+                    else "starting from random initialization"
+                )
+                print(
+                    f"Initializing fresh individual policy for terrain {terrain} "
+                    f"at design cycle {self.design_counter}, terrain block {block_idx + 1}; "
+                    f"{bootstrap_message}."
+                )
+            else:
+                replay_size = self._terrain_individual_replay_size(terrain)
+                print(
+                    f"Selecting existing individual policy for terrain {terrain} "
+                    f"with {replay_size} replay steps; not copying from population."
+                )
+            self.rl_alg.episode_init(
+                copy_population_to_individual=(
+                    reset_fresh
+                    and self.bootstrap_individual_from_terrain_population
+                ),
+                terrain_name=terrain,
+                reset_individual=reset_fresh,
+            )
+            if reset_fresh:
+                self.replay.reset_individual_buffer(terrain_name=terrain, terrain_id=terrain_idx)
+                self._individual_design_terrain_keys.add(design_terrain_key)
+            self._activate_terrain_models(terrain, terrain_idx, reset_individual=False)
         self._last_individual_reset_key = reset_key
         return True
     
@@ -1429,8 +1569,7 @@ class Train():
             )
             self.optimized_params = SnakeEnv.get_default_design()
 
-            q_network = self.rl_alg.get_q_network(self.networks['population'])
-            policy_network = self.rl_alg.get_policy_network(self.networks['population'])
+            q_network, policy_network = self._population_networks_for_active_terrains()
             self.cost, self.optimized_params = self.do_alg.optimize_design(
                 design=self.optimized_params,
                 q_network=q_network,
@@ -1492,8 +1631,7 @@ class Train():
                 self.design_counter,
                 self.episode_counter,
             )
-            q_network = self.rl_alg.get_q_network(self.networks['population'])
-            policy_network = self.rl_alg.get_policy_network(self.networks['population'])
+            q_network, policy_network = self._population_networks_for_active_terrains()
             self.cost, self.optimized_params = self.do_alg.optimize_design(
                 design=self.optimized_params,
                 q_network=q_network,
@@ -1583,7 +1721,11 @@ class Train():
             target_entropy = self._scheduled_target_entropy()
             self.rl_alg.set_target_entropy(target_entropy)
             print(f'scheduled SAC target entropy: {target_entropy:.3f}')
-            q1loss, q2loss, policyloss, popq1loss, popq2loss, poppolicyloss = self.rl_alg.single_train_step(train_ind=True, train_pop=train_pop) # train one step
+            q1loss, q2loss, policyloss, popq1loss, popq2loss, poppolicyloss = self.rl_alg.single_train_step(
+                train_ind=True,
+                train_pop=train_pop,
+                terrain_name=self.current_training_terrain,
+            ) # train one step
             
             #log data on lists
             self.q1loss.extend(q1loss)
@@ -1608,6 +1750,15 @@ class Train():
                 print(
                     f"Skipping SAC updates for global warmup episode "
                     f"{self.episode_counter + 1}/{self.training_update_warmup_episodes}."
+                )
+            elif (
+                0 if self.current_training_episode_in_block is None
+                else int(self.current_training_episode_in_block)
+            ) < self.training_update_warmup_episodes:
+                print(
+                    f"Skipping SAC updates for terrain warmup episode "
+                    f"{self.current_training_episode_in_block + 1}/{self.training_update_warmup_episodes} "
+                    f"on {self.current_training_terrain}."
                 )
             elif self._is_terrain_prefill_episode():
                 print(
@@ -1795,6 +1946,7 @@ class Train():
         if state is None:
             return
 
+        self._activate_terrain_models(terrain, self.terrain_name_to_id[terrain], reset_individual=False)
         self._restore_policy_state(self.rl_alg._ind_policy, state)
         if self.promote_best_policy_to_population:
             self._restore_policy_state(self.rl_alg._pop_policy, state)
@@ -1857,7 +2009,6 @@ class Train():
             self._summarize_training_performance()
             return
 
-        policy = self.rl_alg.get_policy_network(self.networks['individual'])
         previous_terrain = SnakeEnv.get_current_terrain()
         eval_design = SnakeEnv.get_current_design()
         total_eval_rollouts = len(self.terrain_sequence) * self.eval_episodes_per_terrain
@@ -1908,6 +2059,8 @@ class Train():
 
         for terrain_order_idx, terrain in enumerate(self.terrain_sequence):
             terrain_idx = self.terrain_name_to_id[terrain]
+            self._activate_terrain_models(terrain, terrain_idx, reset_individual=False)
+            policy = self.rl_alg.get_policy_network(self.networks['individual'])
             SnakeEnv.set_current_terrain(terrain)
             episode_returns = []
             episode_lengths = []
@@ -2211,6 +2364,20 @@ class Train():
         torch.save(self.rl_alg._pop_qf1_target, os.path.join(results_dir, f'pop_qf1_tar_{checkpoint_prefix}_{self.results_tag}.pt'))
         torch.save(self.rl_alg._pop_qf2_target, os.path.join(results_dir, f'pop_qf2_tar_{checkpoint_prefix}_{self.results_tag}.pt'))
 
+        if hasattr(self.rl_alg, 'get_terrain_networks'):
+            network_specs = {
+                'ind': self.rl_alg.get_terrain_networks('individual'),
+                'pop': self.rl_alg.get_terrain_networks('population'),
+            }
+            for role_prefix, terrain_networks in network_specs.items():
+                for terrain, networks in terrain_networks.items():
+                    terrain_suffix = f'{checkpoint_prefix}_{terrain}_{self.results_tag}'
+                    torch.save(networks['policy'], os.path.join(results_dir, f'{role_prefix}_policy_{terrain_suffix}.pt'))
+                    torch.save(networks['qf1'], os.path.join(results_dir, f'{role_prefix}_qf1_{terrain_suffix}.pt'))
+                    torch.save(networks['qf2'], os.path.join(results_dir, f'{role_prefix}_qf2_{terrain_suffix}.pt'))
+                    torch.save(networks['qf1_target'], os.path.join(results_dir, f'{role_prefix}_qf1_tar_{terrain_suffix}.pt'))
+                    torch.save(networks['qf2_target'], os.path.join(results_dir, f'{role_prefix}_qf2_tar_{terrain_suffix}.pt'))
+
         optimized_params = getattr(self, 'optimized_params', None)
         if optimized_params is not None:
             optimized_params = SnakeEnv._coerce_design_vector(optimized_params)
@@ -2222,12 +2389,38 @@ class Train():
             'SNAKE_EVAL_EPISODES_PER_TERRAIN': str(int(self.eval_episodes_per_terrain)),
             'SNAKE_DESIGNS_PER_RUN': os.getenv('SNAKE_DESIGNS_PER_RUN', 'all'),
             'SNAKE_RANDOMIZE_TERRAIN_ORDER': '1' if self.randomize_terrain_order else '0',
+            'SNAKE_TERRAIN_MODEL_MODE': self.terrain_model_mode,
+            'SNAKE_BOOTSTRAP_INDIVIDUAL_FROM_TERRAIN_POPULATION': (
+                '1' if self.bootstrap_individual_from_terrain_population else '0'
+            ),
+            'SNAKE_RESUME_COMPLETED_TERRAIN_BLOCKS': (
+                '1' if self.resume_completed_terrain_blocks else '0'
+            ),
         }
 
         metadata = {
             'seed': int(self.seed),
             'matched_experiment_settings': matched_experiment_settings,
             'results_tag': self.results_tag,
+            'terrain_model_mode': self.terrain_model_mode,
+            'individual_terrains_available': (
+                self.rl_alg.individual_terrains_available()
+                if hasattr(self.rl_alg, 'individual_terrains_available') else []
+            ),
+            'population_terrains_available': (
+                self.rl_alg.population_terrains_available()
+                if hasattr(self.rl_alg, 'population_terrains_available') else []
+            ),
+            'active_terrain_name': getattr(self.rl_alg, '_active_terrain', None),
+            'ignored_replay_tags': list(self.ignored_replay_tags),
+            'resume_completed_terrain_blocks': bool(self.resume_completed_terrain_blocks),
+            'bootstrap_individual_from_terrain_population': bool(
+                self.bootstrap_individual_from_terrain_population
+            ),
+            'individual_design_terrain_keys': [
+                {'design_counter': int(design_counter), 'terrain': terrain}
+                for design_counter, terrain in sorted(self._individual_design_terrain_keys)
+            ],
             'design_counter': self.design_counter,
             'episode_counter': self.episode_counter,
             'optimized_params': optimized_params,
@@ -2305,6 +2498,170 @@ class Train():
         print(f"saved networks for design cycle {self.design_counter} and episode {self.episode_counter}")
         print(f"checkpoint prefix: {checkpoint_prefix}")
 
+    def _checkpoint_terrain_for_legacy_networks(self, metadata):
+        schedule = metadata.get('training_episode_schedule') or []
+        episode_counter = int(metadata.get('episode_counter', 0))
+        if schedule and episode_counter > 0:
+            idx = min(episode_counter - 1, len(schedule) - 1)
+            return schedule[idx]
+        active_terrains = metadata.get('active_terrains') or metadata.get('terrain_sequence') or self.terrain_sequence
+        if active_terrains:
+            return active_terrains[0]
+        return self.terrain_sequence[0] if self.terrain_sequence else 'carpet'
+
+    def _completed_requested_terrain_blocks_from_checkpoint(
+            self,
+            metadata,
+            requested_terrain_sequence,
+            requested_training_block_size,
+    ):
+        if not self.resume_completed_terrain_blocks:
+            return 0
+
+        saved_episode_counter = int(metadata.get('episode_counter', 0))
+        requested_training_block_size = max(1, int(requested_training_block_size))
+        if saved_episode_counter < requested_training_block_size:
+            return 0
+
+        saved_schedule = list(metadata.get('training_episode_schedule') or [])
+        completed_blocks = 0
+        for block_idx, terrain in enumerate(requested_terrain_sequence):
+            start = block_idx * requested_training_block_size
+            end = start + requested_training_block_size
+            if saved_episode_counter < end:
+                break
+            if saved_schedule:
+                if end > len(saved_schedule):
+                    break
+                if saved_schedule[start:end] != [terrain] * requested_training_block_size:
+                    break
+            completed_blocks += 1
+
+        if completed_blocks == 0 and not saved_schedule:
+            completed_blocks = min(
+                saved_episode_counter // requested_training_block_size,
+                len(requested_terrain_sequence),
+            )
+
+        return int(min(completed_blocks, len(requested_terrain_sequence)))
+
+    def _load_network_group_from_checkpoint(
+            self,
+            base_path,
+            checkpoint_prefix,
+            role_prefix,
+            networks,
+            terrain=None,
+            require=True,
+    ):
+        terrain_suffix = f'_{terrain}' if terrain is not None else ''
+        stems = {
+            'policy': f'{role_prefix}_policy_{checkpoint_prefix}{terrain_suffix}',
+            'qf1': f'{role_prefix}_qf1_{checkpoint_prefix}{terrain_suffix}',
+            'qf2': f'{role_prefix}_qf2_{checkpoint_prefix}{terrain_suffix}',
+            'qf1_target': f'{role_prefix}_qf1_tar_{checkpoint_prefix}{terrain_suffix}',
+            'qf2_target': f'{role_prefix}_qf2_tar_{checkpoint_prefix}{terrain_suffix}',
+        }
+        paths = {
+            key: self._resolve_tagged_path(base_path, stem, 'pt')
+            for key, stem in stems.items()
+        }
+        if not all(os.path.exists(path) for path in paths.values()):
+            if require:
+                missing = [path for path in paths.values() if not os.path.exists(path)]
+                raise FileNotFoundError(
+                    f"Missing checkpoint network file(s): {missing}"
+                )
+            return False
+
+        for key, path in paths.items():
+            networks[key].load_state_dict(self._load_trusted_checkpoint(path).state_dict())
+        return True
+
+    def _load_checkpoint_networks(self, base_path, checkpoint_prefix, metadata):
+        checkpoint_mode = str(metadata.get('terrain_model_mode', 'shared')).strip().lower()
+        if self.terrain_model_mode == 'separate':
+            terrain_candidates = list(dict.fromkeys(
+                list(metadata.get('individual_terrains_available') or [])
+                + list(metadata.get('population_terrains_available') or [])
+                + list(metadata.get('active_terrains') or [])
+                + list(metadata.get('terrain_sequence') or [])
+                + list(self.terrain_sequence)
+            ))
+
+            loaded_any = False
+            if checkpoint_mode == 'separate':
+                for terrain in terrain_candidates:
+                    self.rl_alg.set_active_terrain(terrain)
+                    terrain_networks = self.rl_alg.get_terrain_networks(
+                        'individual',
+                        terrains=[terrain],
+                    )[terrain]
+                    loaded_any = (
+                        self._load_network_group_from_checkpoint(
+                            base_path,
+                            checkpoint_prefix,
+                            'ind',
+                            terrain_networks,
+                            terrain=terrain,
+                            require=False,
+                        )
+                        or loaded_any
+                    )
+                    terrain_networks = self.rl_alg.get_terrain_networks(
+                        'population',
+                        terrains=[terrain],
+                    )[terrain]
+                    loaded_any = (
+                        self._load_network_group_from_checkpoint(
+                            base_path,
+                            checkpoint_prefix,
+                            'pop',
+                            terrain_networks,
+                            terrain=terrain,
+                            require=False,
+                        )
+                        or loaded_any
+                    )
+
+            if not loaded_any:
+                legacy_terrain = self._checkpoint_terrain_for_legacy_networks(metadata)
+                self.rl_alg.set_active_terrain(legacy_terrain)
+                self._load_network_group_from_checkpoint(
+                    base_path,
+                    checkpoint_prefix,
+                    'ind',
+                    self.rl_alg.get_terrain_networks('individual', terrains=[legacy_terrain])[legacy_terrain],
+                    require=True,
+                )
+                self._load_network_group_from_checkpoint(
+                    base_path,
+                    checkpoint_prefix,
+                    'pop',
+                    self.rl_alg.get_terrain_networks('population', terrains=[legacy_terrain])[legacy_terrain],
+                    require=True,
+                )
+                print(
+                    f"loaded legacy shared checkpoint networks into terrain model '{legacy_terrain}'"
+                )
+
+            return
+
+        self._load_network_group_from_checkpoint(
+            base_path,
+            checkpoint_prefix,
+            'ind',
+            self.networks['individual'],
+            require=True,
+        )
+        self._load_network_group_from_checkpoint(
+            base_path,
+            checkpoint_prefix,
+            'pop',
+            self.networks['population'],
+            require=True,
+        )
+
     def load_networks(self, base_path, checkpoint_prefix):
         metadata_path = self._resolve_tagged_path(base_path, f'{checkpoint_prefix}_metadata', 'json')
         if not os.path.exists(metadata_path):
@@ -2316,6 +2673,18 @@ class Train():
 
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
+
+        saved_results_tag = metadata.get('results_tag')
+        if (
+            saved_results_tag in self.ignored_replay_tags
+            and not self.allow_ignored_replay_tags
+        ):
+            raise RuntimeError(
+                f"Checkpoint results_tag '{saved_results_tag}' is in "
+                f"SNAKE_IGNORED_REPLAY_TAGS={self.ignored_replay_tags}. "
+                "Set SNAKE_ALLOW_IGNORED_REPLAY_TAGS=1 only if you intentionally "
+                "want to resume that run."
+            )
 
         if 'design_parameter_options' in metadata:
             raise RuntimeError(
@@ -2347,37 +2716,7 @@ class Train():
                 f"current action_dim={expected_action_dim}."
             )
 
-        self.rl_alg._ind_policy.load_state_dict(self._load_trusted_checkpoint(
-            self._resolve_tagged_path(base_path, f'ind_policy_{checkpoint_prefix}', 'pt')
-        ).state_dict())
-        self.rl_alg._ind_qf1.load_state_dict(self._load_trusted_checkpoint(
-            self._resolve_tagged_path(base_path, f'ind_qf1_{checkpoint_prefix}', 'pt')
-        ).state_dict())
-        self.rl_alg._ind_qf2.load_state_dict(self._load_trusted_checkpoint(
-            self._resolve_tagged_path(base_path, f'ind_qf2_{checkpoint_prefix}', 'pt')
-        ).state_dict())
-        self.rl_alg._ind_qf1_target.load_state_dict(self._load_trusted_checkpoint(
-            self._resolve_tagged_path(base_path, f'ind_qf1_tar_{checkpoint_prefix}', 'pt')
-        ).state_dict())
-        self.rl_alg._ind_qf2_target.load_state_dict(self._load_trusted_checkpoint(
-            self._resolve_tagged_path(base_path, f'ind_qf2_tar_{checkpoint_prefix}', 'pt')
-        ).state_dict())
-
-        self.rl_alg._pop_policy.load_state_dict(self._load_trusted_checkpoint(
-            self._resolve_tagged_path(base_path, f'pop_policy_{checkpoint_prefix}', 'pt')
-        ).state_dict())
-        self.rl_alg._pop_qf1.load_state_dict(self._load_trusted_checkpoint(
-            self._resolve_tagged_path(base_path, f'pop_qf1_{checkpoint_prefix}', 'pt')
-        ).state_dict())
-        self.rl_alg._pop_qf2.load_state_dict(self._load_trusted_checkpoint(
-            self._resolve_tagged_path(base_path, f'pop_qf2_{checkpoint_prefix}', 'pt')
-        ).state_dict())
-        self.rl_alg._pop_qf1_target.load_state_dict(self._load_trusted_checkpoint(
-            self._resolve_tagged_path(base_path, f'pop_qf1_tar_{checkpoint_prefix}', 'pt')
-        ).state_dict())
-        self.rl_alg._pop_qf2_target.load_state_dict(self._load_trusted_checkpoint(
-            self._resolve_tagged_path(base_path, f'pop_qf2_tar_{checkpoint_prefix}', 'pt')
-        ).state_dict())
+        self._load_checkpoint_networks(base_path, checkpoint_prefix, metadata)
 
         print(f"loaded networks from checkpoint: {checkpoint_prefix}")
 
@@ -2440,20 +2779,31 @@ class Train():
                         "SNAKE_EVAL_ONLY=1 to evaluate a checkpoint on the requested terrains."
                     )
                 else:
+                    completed_blocks = self._completed_requested_terrain_blocks_from_checkpoint(
+                        metadata,
+                        requested_terrain_sequence,
+                        requested_training_block_size,
+                    )
+                    new_episode_counter = completed_blocks * requested_training_block_size
                     print(
                         "Resuming checkpoint as a new terrain run: "
                         f"saved terrains={saved_terrain_sequence}, saved episodes/terrain={saved_training_block_size}, "
                         f"saved episode_counter={self.episode_counter}; "
                         f"new terrains={requested_terrain_sequence}, new episodes/terrain={requested_training_block_size}. "
-                        "The loaded networks/replay are preserved, and the training episode counter is reset to 0 "
-                        "for the new terrain schedule."
+                        "The loaded networks/replay are preserved, and the training episode counter is set to "
+                        f"{new_episode_counter} for the new terrain schedule."
                     )
-                    self.episode_counter = 0
+                    if completed_blocks > 0:
+                        completed_terrains = requested_terrain_sequence[:completed_blocks]
+                        print(
+                            "Treating completed checkpoint terrain block(s) as done for this schedule: "
+                            f"{', '.join(completed_terrains)}."
+                        )
+                    self.episode_counter = new_episode_counter
                     self._last_individual_reset_key = None
 
             self.terrain_sequence = requested_terrain_sequence
             self.training_terrain_block_size = requested_training_block_size
-            saved_results_tag = metadata.get('results_tag')
             if saved_results_tag and os.getenv('SNAKE_ACTIVE_TERRAINS') is None and os.getenv('SNAKE_RESULTS_TAG') is None:
                 self.results_tag = saved_results_tag
             self.legacy_results_tags = list(dict.fromkeys(
@@ -2735,6 +3085,25 @@ class Train():
                     self.promote_best_policy_to_population,
                 )),
             )
+            self.resume_completed_terrain_blocks = self._read_bool_env(
+                'SNAKE_RESUME_COMPLETED_TERRAIN_BLOCKS',
+                default=bool(metadata.get(
+                    'resume_completed_terrain_blocks',
+                    self.resume_completed_terrain_blocks,
+                )),
+            )
+            self.bootstrap_individual_from_terrain_population = self._read_bool_env(
+                'SNAKE_BOOTSTRAP_INDIVIDUAL_FROM_TERRAIN_POPULATION',
+                default=bool(metadata.get(
+                    'bootstrap_individual_from_terrain_population',
+                    self.bootstrap_individual_from_terrain_population,
+                )),
+            )
+            self._individual_design_terrain_keys = {
+                (int(item.get('design_counter', self.design_counter)), str(item.get('terrain')))
+                for item in metadata.get('individual_design_terrain_keys', [])
+                if item.get('terrain') is not None
+            }
             self.action_noise_std = max(
                 0.0,
                 float(os.getenv('SNAKE_ACTION_NOISE_STD', default_action_noise_std)),
@@ -2832,6 +3201,9 @@ class Train():
                 f"episodes/terrain: {self.training_terrain_block_size}, "
                 f"population start design: {self.population_training_start_design}, "
                 f"terrain prefill episodes: {self.terrain_prefill_episodes}, "
+                f"bootstrap individual from terrain population: "
+                f"{self.bootstrap_individual_from_terrain_population}, "
+                f"resume completed terrain blocks: {self.resume_completed_terrain_blocks}, "
                 f"policy warmup episodes: {self.policy_action_warmup_episodes}, "
                 f"update warmup episodes: {self.training_update_warmup_episodes}, "
                 f"random action start/min: {self.random_action_prob_start:.3f}/{self.random_action_prob_min:.3f}, "
@@ -2859,7 +3231,18 @@ class Train():
             if not self.load_replay(replay_path):
                 raise RuntimeError(f"Replay buffer could not be restored from {replay_path}.")
             self._refresh_active_terrain_filter()
-            print("Replay contains", self.replay._individual_buffer._size, "steps")
+            if int(self.episode_counter) < int(self.episode_iterations):
+                terrain, terrain_idx, _block_idx, _episode_in_block = self._get_training_terrain_for_episode(
+                    int(self.episode_counter)
+                )
+                self._activate_terrain_models(terrain, terrain_idx, reset_individual=False)
+            print(
+                "Replay contains",
+                self._replay_collection_size(
+                    getattr(self.replay, '_individual_buffers', {'active': self.replay._individual_buffer})
+                ),
+                "individual steps",
+            )
         else:
             raise FileNotFoundError(
                 f"No replay buffer found for checkpoint prefix '{checkpoint_prefix}'. "
@@ -2966,6 +3349,91 @@ class Train():
         buffer._observation_dim = saved_observation_dim
         buffer._action_dim = saved_action_dim
 
+    def _serialize_replay_buffer_collection(self, buffers):
+        return {
+            terrain: self._serialize_replay_buffer(buffer)
+            for terrain, buffer in buffers.items()
+        }
+
+    def _new_replay_buffer_for_kind(self, kind):
+        if kind == 'individual':
+            return self.replay._new_individual_buffer()
+        return self.replay._new_population_buffer()
+
+    def _restore_replay_buffer_collection(self, collection_data, kind):
+        restored = {}
+        for terrain, buffer_data in collection_data.items():
+            buffer = self._new_replay_buffer_for_kind(kind)
+            self._restore_replay_buffer(buffer, buffer_data)
+            restored[terrain] = buffer
+        return restored
+
+    def _subset_serialized_replay_buffer(self, data, indices):
+        indices = np.asarray(indices, dtype=np.int64)
+        max_size = int(data.get("_max_replay_buffer_size", len(indices)))
+        subset = {
+            "observations": data["observations"][indices].copy(),
+            "actions": data["actions"][indices].copy(),
+            "rewards": data["rewards"][indices].copy(),
+            "terminals": data["terminals"][indices].copy(),
+            "next_observations": data["next_observations"][indices].copy(),
+            "env_infos": {
+                key: value[indices].copy()
+                for key, value in data.get("env_infos", {}).items()
+            },
+            "env_info_keys": list(data.get("env_info_keys", data.get("env_infos", {}).keys())),
+            "_top": len(indices) % max_size if max_size else 0,
+            "_size": int(len(indices)),
+            "_replace": data.get("_replace", True),
+            "_max_replay_buffer_size": max_size,
+            "_observation_dim": data.get("_observation_dim"),
+            "_action_dim": data.get("_action_dim"),
+        }
+        return subset
+
+    def _split_serialized_replay_buffer_by_terrain(self, data):
+        size = int(data.get("_size", 0))
+        if size <= 0:
+            return {
+                terrain: self._subset_serialized_replay_buffer(data, [])
+                for terrain in self.terrain_sequence
+            }
+
+        env_infos = data.get("env_infos", {})
+        terrain_values = env_infos.get("terrain_id")
+        if terrain_values is None:
+            fallback_terrain = self.terrain_sequence[0] if self.terrain_sequence else 'unknown'
+            return {
+                fallback_terrain: self._subset_serialized_replay_buffer(data, np.arange(size))
+            }
+
+        terrain_ids = np.asarray(terrain_values[:size]).reshape(-1).astype(int)
+        split = {}
+        for terrain_id in sorted(np.unique(terrain_ids)):
+            terrain = SnakeEnv.terrain_id_to_name.get(int(terrain_id), f'terrain_{int(terrain_id)}')
+            indices = np.where(terrain_ids == int(terrain_id))[0]
+            split[terrain] = self._subset_serialized_replay_buffer(data, indices)
+
+        for terrain in self.terrain_sequence:
+            split.setdefault(terrain, self._subset_serialized_replay_buffer(data, []))
+        return split
+
+    def _bind_replay_after_restore(self, active_terrain_name=None):
+        active_terrain_name = (
+            active_terrain_name
+            or self.current_training_terrain
+            or (self.terrain_sequence[0] if self.terrain_sequence else None)
+        )
+        if active_terrain_name and hasattr(self.replay, 'set_active_terrain'):
+            self.replay.set_active_terrain(
+                active_terrain_name,
+                self.terrain_name_to_id.get(active_terrain_name),
+            )
+        self._refresh_active_terrain_filter()
+
+    def _replay_collection_size(self, buffers):
+        return int(sum(buffer._size for buffer in buffers.values()))
+
     def save_replay(self, filepath):
         """Save full coadaptation replay state to disk."""
 
@@ -2975,17 +3443,28 @@ class Train():
                 "mode": self.replay._mode,
                 "ep_counter": self.replay._ep_counter,
                 "expect_init_state": self.replay._expect_init_state,
+                "terrain_model_mode": getattr(self.replay, '_terrain_model_mode', self.terrain_model_mode),
+                "active_terrain_name": getattr(self.replay, '_active_terrain_name', None),
                 "individual_buffer": self._serialize_replay_buffer(self.replay._individual_buffer),
                 "population_buffer": self._serialize_replay_buffer(self.replay._population_buffer),
                 "init_state_buffer": self._serialize_replay_buffer(self.replay._init_state_buffer),
+                "individual_buffers_by_terrain": self._serialize_replay_buffer_collection(
+                    getattr(self.replay, '_individual_buffers', {})
+                ),
+                "population_buffers_by_terrain": self._serialize_replay_buffer_collection(
+                    getattr(self.replay, '_population_buffers', {})
+                ),
+                "init_state_buffers_by_terrain": self._serialize_replay_buffer_collection(
+                    getattr(self.replay, '_init_state_buffers', {})
+                ),
             }
             torch.save(data, filepath)
             print(
                 "saved replay buffers to {} (individual={}, population={}, init={})".format(
                     filepath,
-                    self.replay._individual_buffer._size,
-                    self.replay._population_buffer._size,
-                    self.replay._init_state_buffer._size,
+                    self._replay_collection_size(getattr(self.replay, '_individual_buffers', {'active': self.replay._individual_buffer})),
+                    self._replay_collection_size(getattr(self.replay, '_population_buffers', {'active': self.replay._population_buffer})),
+                    self._replay_collection_size(getattr(self.replay, '_init_state_buffers', {'active': self.replay._init_state_buffer})),
                 )
             )
         except Exception as e:
@@ -2995,6 +3474,53 @@ class Train():
         """Load full coadaptation replay state from disk."""
         try:
             data = self._load_trusted_checkpoint(filepath)
+
+            if self.terrain_model_mode == 'separate':
+                if "individual_buffers_by_terrain" in data:
+                    self.replay._individual_buffers = self._restore_replay_buffer_collection(
+                        data["individual_buffers_by_terrain"],
+                        'individual',
+                    )
+                    self.replay._population_buffers = self._restore_replay_buffer_collection(
+                        data["population_buffers_by_terrain"],
+                        'population',
+                    )
+                    self.replay._init_state_buffers = self._restore_replay_buffer_collection(
+                        data["init_state_buffers_by_terrain"],
+                        'population',
+                    )
+                elif "individual_buffer" in data:
+                    self.replay._individual_buffers = self._restore_replay_buffer_collection(
+                        self._split_serialized_replay_buffer_by_terrain(data["individual_buffer"]),
+                        'individual',
+                    )
+                    self.replay._population_buffers = self._restore_replay_buffer_collection(
+                        self._split_serialized_replay_buffer_by_terrain(data["population_buffer"]),
+                        'population',
+                    )
+                    self.replay._init_state_buffers = self._restore_replay_buffer_collection(
+                        self._split_serialized_replay_buffer_by_terrain(data["init_state_buffer"]),
+                        'population',
+                    )
+                else:
+                    split = self._split_serialized_replay_buffer_by_terrain(data)
+                    self.replay._individual_buffers = self._restore_replay_buffer_collection(split, 'individual')
+                    self.replay._population_buffers = self._restore_replay_buffer_collection(split, 'population')
+                    self.replay._init_state_buffers = self._restore_replay_buffer_collection(split, 'population')
+
+                self.replay._mode = data.get("mode", self.replay._mode)
+                self.replay._ep_counter = data.get("ep_counter", self.replay._ep_counter)
+                self.replay._expect_init_state = data.get("expect_init_state", self.replay._expect_init_state)
+                self._bind_replay_after_restore(data.get("active_terrain_name"))
+                print(
+                    "loaded terrain replay buffers from {} (individual={}, population={}, init={})".format(
+                        filepath,
+                        self._replay_collection_size(self.replay._individual_buffers),
+                        self._replay_collection_size(self.replay._population_buffers),
+                        self._replay_collection_size(self.replay._init_state_buffers),
+                    )
+                )
+                return True
 
             if "individual_buffer" not in data:
                 # Backward-compatible fallback for older checkpoints that only

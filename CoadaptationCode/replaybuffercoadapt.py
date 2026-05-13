@@ -10,11 +10,27 @@ class CoadaptReplayBuffer(ReplayBuffer):
             max_replay_buffer_size_species,
             max_replay_buffer_size_population,
             env,
-            env_info_sizes=None
+            env_info_sizes=None,
+            terrain_model_mode='separate',
+            terrain_name_to_id=None,
+            terrain_names=None,
     ):
         self._env = env
         self._max_replay_buffer_size_species = max_replay_buffer_size_species
         self._max_replay_buffer_size_population = max_replay_buffer_size_population
+        self._terrain_model_mode = str(terrain_model_mode).strip().lower()
+        if self._terrain_model_mode not in ('separate', 'shared'):
+            raise ValueError(
+                "terrain_model_mode must be either 'separate' or 'shared'."
+            )
+        self._terrain_name_to_id = dict(terrain_name_to_id or {})
+        self._terrain_id_to_name = {
+            int(terrain_id): terrain_name
+            for terrain_name, terrain_id in self._terrain_name_to_id.items()
+        }
+        self._terrain_names = list(terrain_names or self._terrain_name_to_id.keys())
+        self._active_terrain_name = None
+        self._active_terrain_id = None
         
         default_env_info_sizes = {
             'terrain_id': 1,
@@ -60,22 +76,26 @@ class CoadaptReplayBuffer(ReplayBuffer):
         self._ep_counter = 0
         self._expect_init_state = True # LOOK AT THIS VARIABLE?
       
-        # init replay buffers
-        self._individual_buffer = EnvReplayBuffer(
-            env=self._env,
-            max_replay_buffer_size=self._max_replay_buffer_size_species,
-            env_info_sizes=self._env_info_sizes,
-        )
-        self._population_buffer = EnvReplayBuffer(
-            env=self._env,
-            max_replay_buffer_size=self._max_replay_buffer_size_population,
-            env_info_sizes=self._env_info_sizes,
-        )
-        self._init_state_buffer = EnvReplayBuffer(
-            env=self._env,
-            max_replay_buffer_size=self._max_replay_buffer_size_population,
-            env_info_sizes=self._env_info_sizes,
-        )
+        self._individual_buffers = {}
+        self._population_buffers = {}
+        self._init_state_buffers = {}
+
+        if self._terrain_model_mode == 'separate':
+            for terrain_name in self._terrain_names:
+                self._ensure_terrain_buffers(terrain_name)
+            if self._terrain_names:
+                self.set_active_terrain(self._terrain_names[0])
+            else:
+                self._individual_buffer = self._new_individual_buffer()
+                self._population_buffer = self._new_population_buffer()
+                self._init_state_buffer = self._new_population_buffer()
+        else:
+            self._individual_buffer = self._new_individual_buffer()
+            self._population_buffer = self._new_population_buffer()
+            self._init_state_buffer = self._new_population_buffer()
+            self._individual_buffers = {'shared': self._individual_buffer}
+            self._population_buffers = {'shared': self._population_buffer}
+            self._init_state_buffers = {'shared': self._init_state_buffer}
     
     # def __getstate__(self):
     #     state = self.__dict__.copy()
@@ -132,6 +152,86 @@ class CoadaptReplayBuffer(ReplayBuffer):
         print(f"replay buffer loaded from {filepath}")
         return buffer
 
+    def _new_individual_buffer(self):
+        return EnvReplayBuffer(
+            env=self._env,
+            max_replay_buffer_size=self._max_replay_buffer_size_species,
+            env_info_sizes=self._env_info_sizes,
+        )
+
+    def _new_population_buffer(self):
+        return EnvReplayBuffer(
+            env=self._env,
+            max_replay_buffer_size=self._max_replay_buffer_size_population,
+            env_info_sizes=self._env_info_sizes,
+        )
+
+    def configure_terrains(self, terrain_name_to_id=None, terrain_names=None):
+        if terrain_name_to_id is not None:
+            self._terrain_name_to_id = dict(terrain_name_to_id)
+            self._terrain_id_to_name = {
+                int(terrain_id): terrain_name
+                for terrain_name, terrain_id in self._terrain_name_to_id.items()
+            }
+        if terrain_names is not None:
+            self._terrain_names = list(terrain_names)
+        if self._terrain_model_mode == 'separate':
+            for terrain_name in self._terrain_names:
+                self._ensure_terrain_buffers(terrain_name)
+
+    def _terrain_name_from_id(self, terrain_id):
+        terrain_id = int(terrain_id)
+        if terrain_id in self._terrain_id_to_name:
+            return self._terrain_id_to_name[terrain_id]
+        return f'terrain_{terrain_id}'
+
+    def _terrain_id_from_name(self, terrain_name):
+        if terrain_name is None:
+            return None
+        if terrain_name in self._terrain_name_to_id:
+            return int(self._terrain_name_to_id[terrain_name])
+        return None
+
+    def _coerce_terrain_name(self, terrain_name=None, terrain_id=None):
+        if self._terrain_model_mode == 'shared':
+            return 'shared'
+        if terrain_name is None and terrain_id is not None:
+            terrain_name = self._terrain_name_from_id(terrain_id)
+        if terrain_name is None:
+            terrain_name = self._active_terrain_name
+        if terrain_name is None:
+            terrain_name = self._terrain_names[0] if self._terrain_names else 'terrain_unknown'
+        return str(terrain_name)
+
+    def _ensure_terrain_buffers(self, terrain_name=None, terrain_id=None):
+        terrain_name = self._coerce_terrain_name(terrain_name, terrain_id)
+        if terrain_name not in self._individual_buffers:
+            self._individual_buffers[terrain_name] = self._new_individual_buffer()
+        if terrain_name not in self._population_buffers:
+            self._population_buffers[terrain_name] = self._new_population_buffer()
+        if terrain_name not in self._init_state_buffers:
+            self._init_state_buffers[terrain_name] = self._new_population_buffer()
+        if terrain_name not in self._terrain_names and terrain_name != 'shared':
+            self._terrain_names.append(terrain_name)
+        return terrain_name
+
+    def _bind_active_terrain_buffers(self, terrain_name):
+        terrain_name = self._ensure_terrain_buffers(terrain_name)
+        self._active_terrain_name = terrain_name
+        self._active_terrain_id = self._terrain_id_from_name(terrain_name)
+        self._individual_buffer = self._individual_buffers[terrain_name]
+        self._population_buffer = self._population_buffers[terrain_name]
+        self._init_state_buffer = self._init_state_buffers[terrain_name]
+
+    def set_active_terrain(self, terrain_name=None, terrain_id=None):
+        terrain_name = self._coerce_terrain_name(terrain_name, terrain_id)
+        if self._terrain_model_mode == 'separate':
+            self._bind_active_terrain_buffers(terrain_name)
+        else:
+            self._active_terrain_name = 'shared'
+            self._active_terrain_id = terrain_id
+        return terrain_name
+
     def configure_sampling(
             self,
             reward_biased_batch_fraction=None,
@@ -171,13 +271,23 @@ class CoadaptReplayBuffer(ReplayBuffer):
             env_info.setdefault(key, np.zeros(self._env_info_sizes[key], dtype=np.float32))
             env_info[key] = np.asarray(env_info[key], dtype=np.float32).reshape(-1)[:self._env_info_sizes[key]]
 
-        self._individual_buffer.add_sample(observation=observation, action=action, reward=reward, terminal=terminal, next_observation=next_observation, env_info=env_info, **kwargs)
-        self._population_buffer.add_sample(observation=observation, action=action, reward=reward, terminal=terminal, next_observation=next_observation, env_info=env_info, **kwargs)
+        if self._terrain_model_mode == 'separate':
+            terrain_name = self._ensure_terrain_buffers(terrain_id=terrain_id)
+            individual_buffer = self._individual_buffers[terrain_name]
+            population_buffer = self._population_buffers[terrain_name]
+            init_state_buffer = self._init_state_buffers[terrain_name]
+        else:
+            individual_buffer = self._individual_buffer
+            population_buffer = self._population_buffer
+            init_state_buffer = self._init_state_buffer
+
+        individual_buffer.add_sample(observation=observation, action=action, reward=reward, terminal=terminal, next_observation=next_observation, env_info=env_info, **kwargs)
+        population_buffer.add_sample(observation=observation, action=action, reward=reward, terminal=terminal, next_observation=next_observation, env_info=env_info, **kwargs)
 
         # TODO: What is the point of an intitial state replay buffer?
         if self._expect_init_state:
-            self._init_state_buffer.add_sample(observation=observation, action=action, reward=reward, terminal=terminal, next_observation=next_observation, env_info=env_info, **kwargs)
-            self._init_state_buffer.terminate_episode() # right now terminate episode is a pass but could change
+            init_state_buffer.add_sample(observation=observation, action=action, reward=reward, terminal=terminal, next_observation=next_observation, env_info=env_info, **kwargs)
+            init_state_buffer.terminate_episode() # right now terminate episode is a pass but could change
             self._expect_init_state = False
 
     def _random_batch_from_indices(self, buffer, indices):
@@ -317,6 +427,12 @@ class CoadaptReplayBuffer(ReplayBuffer):
 
     def random_start_batch_for_terrain(self, batch_size, terrain_id):
         """Sample a start-state batch from one terrain when available."""
+        if self._terrain_model_mode == 'separate':
+            terrain_name = self._ensure_terrain_buffers(terrain_id=terrain_id)
+            return self._balanced_random_batch(
+                self._init_state_buffers[terrain_name],
+                batch_size,
+            )
         return self._terrain_random_batch(
             buffer=self._init_state_buffer,
             batch_size=batch_size,
@@ -343,6 +459,8 @@ class CoadaptReplayBuffer(ReplayBuffer):
             return self._individual_buffer.num_steps_can_sample(**kwargs)
         elif self._mode == "population":
             return self._population_buffer.num_steps_can_sample(**kwargs)
+        elif self._mode == "start":
+            return self._init_state_buffer.num_steps_can_sample(**kwargs)
         else:
             raise ValueError(f"Unknown replay buffer mode: {self._mode}")
 
@@ -393,12 +511,15 @@ class CoadaptReplayBuffer(ReplayBuffer):
             raise ValueError(f"No known mode: {mode}")
 
     
-    def reset_individual_buffer(self):
-        self._individual_buffer = EnvReplayBuffer(
-            env=self._env,
-            max_replay_buffer_size=self._max_replay_buffer_size_species,
-            env_info_sizes=self._env_info_sizes,
-        )
+    def reset_individual_buffer(self, terrain_name=None, terrain_id=None):
+        if self._terrain_model_mode == 'separate':
+            terrain_name = self._coerce_terrain_name(terrain_name, terrain_id)
+            self._individual_buffers[terrain_name] = self._new_individual_buffer()
+            if terrain_name == self._active_terrain_name:
+                self._individual_buffer = self._individual_buffers[terrain_name]
+        else:
+            self._individual_buffer = self._new_individual_buffer()
+            self._individual_buffers['shared'] = self._individual_buffer
         self._ep_counter = 0 # reset number of episodes for next design
 
 
