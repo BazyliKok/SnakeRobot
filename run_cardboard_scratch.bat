@@ -1,0 +1,17 @@
+@echo off
+setlocal
+
+cd /d "%~dp0"
+
+set SNAKE_RESUME_CHECKPOINT=0
+set SNAKE_CHECKPOINT_PREFIX=
+set SNAKE_RESUME_AS_NEW_TERRAIN_RUN=
+set SNAKE_ACTIVE_TERRAINS=cardboard
+set SNAKE_RESULTS_TAG=cardboard_scratch
+set SNAKE_EPISODES_PER_TERRAIN=40
+set SNAKE_TERRAIN_MODEL_MODE=separate
+set SNAKE_DESIGNS_PER_RUN=1
+set SNAKE_EVAL_EPISODES_PER_TERRAIN=0
+
+python .\CoadaptationCode\train_coadapt.py
+

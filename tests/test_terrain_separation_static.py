@@ -18,6 +18,9 @@ def test_separate_terrain_mode_is_the_default():
     assert "terrain_model_mode='separate'" in replay_source
     assert "SNAKE_BOOTSTRAP_INDIVIDUAL_FROM_TERRAIN_POPULATION" in train_source
     assert "SNAKE_RESUME_COMPLETED_TERRAIN_BLOCKS" in train_source
+    assert "SNAKE_FIXED_SCALE_DESIGN" in train_source
+    assert "SNAKE_RESUME_AS_NEW_DESIGN_RUN" in train_source
+    assert "SNAKE_CHECKPOINT_RESULTS_TAG" in train_source
 
 
 def test_fresh_separate_individual_bootstraps_from_same_terrain_population():

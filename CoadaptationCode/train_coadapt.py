@@ -72,6 +72,9 @@ class Train():
         self.design_cylces = 20 # total number of design cycles
         self.design_mode = os.getenv('SNAKE_SCALE_DESIGN_MODE', 'homogeneous').strip().lower()
         self.initial_designs = SnakeEnv.get_init_design_parameters(self.design_mode)
+        self.fixed_scale_design = self._parse_fixed_scale_design()
+        if self.fixed_scale_design is not None:
+            self.initial_designs = [self.fixed_scale_design]
         self.terrain_sequence = self._parse_active_terrains()
         self.terrain_model_mode = os.getenv('SNAKE_TERRAIN_MODEL_MODE', 'separate').strip().lower()
         if self.terrain_model_mode not in ('separate', 'shared'):
@@ -85,8 +88,20 @@ class Train():
         self.episode_iterations = len(self.terrain_sequence) * self.training_terrain_block_size # number of episodes per design
         default_results_tag = f"scale_ab_{'_'.join(self.terrain_sequence)}"
         self.results_tag = os.getenv('SNAKE_RESULTS_TAG', default_results_tag)
-        self.legacy_results_tags = [self.results_tag] + self.terrain_sequence + ['carton']
+        self.checkpoint_results_tags = self._parse_csv_env(
+            'SNAKE_CHECKPOINT_RESULTS_TAGS',
+            default=os.getenv('SNAKE_CHECKPOINT_RESULTS_TAG', ''),
+        )
+        self.legacy_results_tags = list(dict.fromkeys(
+            tag
+            for tag in ([self.results_tag] + self.checkpoint_results_tags + self.terrain_sequence + ['carton'])
+            if tag
+        ))
         resuming_from_checkpoint = self._read_bool_env('SNAKE_RESUME_CHECKPOINT', default=False)
+        self.resume_as_new_design_run = self._read_bool_env(
+            'SNAKE_RESUME_AS_NEW_DESIGN_RUN',
+            default=False,
+        )
         self.use_legacy_policy_warm_start = self._read_bool_env(
             'SNAKE_USE_LEGACY_POLICY',
             default=False,
@@ -300,6 +315,41 @@ class Train():
             for value in str(raw_value).split(',')
             if value.strip()
         ]
+
+    def _parse_fixed_scale_design(self):
+        raw_value = os.getenv('SNAKE_FIXED_SCALE_DESIGN')
+        if raw_value is None or str(raw_value).strip() == '':
+            return None
+
+        parts = [
+            value.strip()
+            for value in str(raw_value).replace('|', ',').split(',')
+            if value.strip()
+        ]
+        if len(parts) not in (2, 4):
+            raise ValueError(
+                "SNAKE_FIXED_SCALE_DESIGN must contain either 2 values "
+                "(width_ratio,attack_angle_deg) or 4 values "
+                "(A_width_ratio,A_attack_angle_deg,B_width_ratio,B_attack_angle_deg)."
+            )
+
+        try:
+            values = [float(value) for value in parts]
+        except ValueError as exc:
+            raise ValueError(
+                "SNAKE_FIXED_SCALE_DESIGN values must be numeric, for example "
+                "'0.70,0,0.70,0'."
+            ) from exc
+
+        if len(values) == 2:
+            values = [values[0], values[1], values[0], values[1]]
+
+        design = SnakeEnv._coerce_design_vector(values)
+        print(
+            "Using fixed scale design from SNAKE_FIXED_SCALE_DESIGN: "
+            f"{self._format_design_for_terminal(design)}"
+        )
+        return design
 
     def _parse_active_terrains(self, raw_value=None):
         raw_value = os.getenv('SNAKE_ACTIVE_TERRAINS', 'carpet,cardboard') if raw_value is None else raw_value
@@ -2390,6 +2440,15 @@ class Train():
             'SNAKE_DESIGNS_PER_RUN': os.getenv('SNAKE_DESIGNS_PER_RUN', 'all'),
             'SNAKE_RANDOMIZE_TERRAIN_ORDER': '1' if self.randomize_terrain_order else '0',
             'SNAKE_TERRAIN_MODEL_MODE': self.terrain_model_mode,
+            'SNAKE_FIXED_SCALE_DESIGN': (
+                ','.join(f'{value:.6g}' for value in self.fixed_scale_design)
+                if self.fixed_scale_design is not None
+                else os.getenv('SNAKE_FIXED_SCALE_DESIGN', '')
+            ),
+            'SNAKE_RESUME_AS_NEW_DESIGN_RUN': (
+                '1' if self.resume_as_new_design_run else '0'
+            ),
+            'SNAKE_CHECKPOINT_RESULTS_TAGS': ','.join(self.checkpoint_results_tags),
             'SNAKE_BOOTSTRAP_INDIVIDUAL_FROM_TERRAIN_POPULATION': (
                 '1' if self.bootstrap_individual_from_terrain_population else '0'
             ),
@@ -2424,6 +2483,9 @@ class Train():
             'design_counter': self.design_counter,
             'episode_counter': self.episode_counter,
             'optimized_params': optimized_params,
+            'fixed_scale_design': self.fixed_scale_design,
+            'resume_as_new_design_run': bool(self.resume_as_new_design_run),
+            'checkpoint_results_tags': list(self.checkpoint_results_tags),
             'scale_design_schema_version': int(SnakeEnv.scale_design_schema_version),
             'scale_design_mode': self.design_mode,
             'scale_parameter_names': list(SnakeEnv.design_parameter_names),
@@ -2729,7 +2791,24 @@ class Train():
                 self.optimized_params = SnakeEnv._coerce_design_vector(self.optimized_params)
             self.design_mode = metadata.get('scale_design_mode', self.design_mode).strip().lower()
             self.initial_designs = SnakeEnv.get_init_design_parameters(self.design_mode)
+            saved_fixed_scale_design = metadata.get('fixed_scale_design', None)
+            env_fixed_scale_design = self._parse_fixed_scale_design()
+            self.fixed_scale_design = (
+                env_fixed_scale_design
+                if env_fixed_scale_design is not None
+                else (
+                    SnakeEnv._coerce_design_vector(saved_fixed_scale_design)
+                    if saved_fixed_scale_design is not None
+                    else None
+                )
+            )
+            if self.fixed_scale_design is not None:
+                self.initial_designs = [self.fixed_scale_design]
             self.num_init_designs = len(self.initial_designs)
+            self.resume_as_new_design_run = self._read_bool_env(
+                'SNAKE_RESUME_AS_NEW_DESIGN_RUN',
+                default=bool(metadata.get('resume_as_new_design_run', self.resume_as_new_design_run)),
+            )
 
             saved_terrain_sequence = metadata.get(
                 'active_terrains',
@@ -2769,15 +2848,26 @@ class Train():
                         f"saved episode_counter={self.episode_counter}; "
                         f"eval terrains={requested_terrain_sequence}, eval episodes/terrain={requested_training_block_size}."
                     )
-                elif not resume_as_new_terrain_run:
+                elif not (resume_as_new_terrain_run or self.resume_as_new_design_run):
                     raise RuntimeError(
                         "Changing SNAKE_ACTIVE_TERRAINS or SNAKE_EPISODES_PER_TERRAIN during "
                         "a design is not supported by default. Resume at a design boundary where "
                         "episode_counter == 0, keep the checkpoint terrain settings, or set "
                         "SNAKE_RESUME_AS_NEW_TERRAIN_RUN=1 to intentionally load the checkpoint "
-                        "weights/replay and start a new terrain schedule from episode 0, or set "
+                        "weights/replay and start a new terrain schedule from episode 0, set "
+                        "SNAKE_RESUME_AS_NEW_DESIGN_RUN=1 to start a new fixed-design training "
+                        "run from the checkpoint weights/replay, or set "
                         "SNAKE_EVAL_ONLY=1 to evaluate a checkpoint on the requested terrains."
                     )
+                elif self.resume_as_new_design_run:
+                    print(
+                        "Resuming checkpoint as a new fixed-design run: "
+                        f"saved terrains={saved_terrain_sequence}, saved episodes/terrain={saved_training_block_size}, "
+                        f"saved episode_counter={self.episode_counter}; "
+                        f"new terrains={requested_terrain_sequence}, new episodes/terrain={requested_training_block_size}. "
+                        "The loaded networks/replay are preserved, and the training episode counter is reset to 0."
+                    )
+                    self.episode_counter = 0
                 else:
                     completed_blocks = self._completed_requested_terrain_blocks_from_checkpoint(
                         metadata,
@@ -2807,7 +2897,12 @@ class Train():
             if saved_results_tag and os.getenv('SNAKE_ACTIVE_TERRAINS') is None and os.getenv('SNAKE_RESULTS_TAG') is None:
                 self.results_tag = saved_results_tag
             self.legacy_results_tags = list(dict.fromkeys(
-                tag for tag in ([self.results_tag, saved_results_tag] + self.terrain_sequence + ['carton'])
+                tag for tag in (
+                    [self.results_tag, saved_results_tag]
+                    + self.checkpoint_results_tags
+                    + self.terrain_sequence
+                    + ['carton']
+                )
                 if tag
             ))
             if terrain_changed or block_size_changed:
@@ -2826,6 +2921,21 @@ class Train():
                 None if (terrain_changed or block_size_changed)
                 else metadata.get('training_schedule_seed', self.current_schedule_seed)
             )
+            if self.resume_as_new_design_run:
+                print(
+                    "Starting a new fixed-design training run from checkpoint weights/replay. "
+                    "The design counter and episode counter are reset to 0, and terrain schedules "
+                    "will be rebuilt for the requested run."
+                )
+                self.design_counter = 0
+                self.episode_counter = 0
+                self.optimized_params = None
+                self.training_terrain_block_order = []
+                self.training_episode_schedule = []
+                self.training_schedule_design_counter = None
+                self.current_schedule_seed = None
+                self._last_individual_reset_key = None
+                self._individual_design_terrain_keys = set()
             self.policy_action_warmup_episodes = metadata.get(
                 'policy_action_warmup_episodes',
                 self.policy_action_warmup_episodes,
