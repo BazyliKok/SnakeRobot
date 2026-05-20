@@ -1,0 +1,3 @@
+Episode,Run_ID,rows,first_timestep,last_timestep,terrain,terrain_block,final_cumulative_reward,sum_reward,sum_progress_cm,sum_raw_progress_cm,run_start_episode,resume_checkpoint,selected
+0,20260518_181839_814536,175,0,174,carpet,0,23.928766492427545,23.92876649242755,55.50595044989818,59.35146510601044,0,2026_05_18_DesignCycle0_ep76,False
+0,20260518_182230_697003,175,0,174,carpet,0,14.73667456167275,14.736674561672748,36.12175467858303,40.58707803487778,0,2026_05_18_DesignCycle0_ep76,True
