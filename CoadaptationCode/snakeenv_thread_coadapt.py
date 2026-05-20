@@ -72,9 +72,9 @@ class SnakeEnv(gymnasium.Env):
     ]
     design_parameter_bounds = [
         (0.45, 0.90),
-        (0.0, 15.0),
+        (0.0, 30.0),
         (0.45, 0.90),
-        (0.0, 15.0),
+        (0.0, 30.0),
     ]
     design_feature_names = [
         "A_width_norm",
@@ -105,16 +105,16 @@ class SnakeEnv(gymnasium.Env):
 
     # Initial matched seeds for the homogeneous-vs-heterogeneous experiment.
     homogeneous_init_design_parameters = [
+        [0.63, 30.0, 0.63, 30.0],
         [0.63, 0.0, 0.63, 0.0],
-        [0.63, 15.0, 0.63, 15.0],
+        [0.90, 30.0, 0.90, 30.0],
         [0.90, 0.0, 0.90, 0.0],
-        [0.90, 15.0, 0.90, 15.0],
     ]
     heterogeneous_init_design_parameters = [
-        [0.63, 0.0, 0.90, 15.0],
-        [0.90, 15.0, 0.63, 0.0],
-        [0.63, 15.0, 0.90, 0.0],
-        [0.90, 0.0, 0.63, 15.0],
+        [0.63, 0.0, 0.90, 30.0],
+        [0.90, 30.0, 0.63, 0.0],
+        [0.63, 30.0, 0.90, 0.0],
+        [0.90, 0.0, 0.63, 30.0],
     ]
     init_design_parameters = heterogeneous_init_design_parameters
 

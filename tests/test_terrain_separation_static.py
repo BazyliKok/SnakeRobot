@@ -62,3 +62,13 @@ def test_pso_scores_with_terrain_specific_actor_and_critic_maps():
     assert "_network_for_terrain(q_network, terrain_name)" in pso_source
     assert "_network_for_terrain(policy_network, terrain_name)" in pso_source
     assert "terrain_q_network(network_input, action)" in pso_source
+
+
+def test_scale_angle_bounds_and_initial_designs_are_current():
+    env_source = read_source("CoadaptationCode/snakeenv_thread_coadapt.py")
+
+    assert "(0.0, 30.0)" in env_source
+    assert "[0.63, 30.0, 0.63, 30.0]" in env_source
+    assert "[0.63, 0.0, 0.63, 0.0]" in env_source
+    assert "[0.90, 30.0, 0.90, 30.0]" in env_source
+    assert "[0.90, 0.0, 0.90, 0.0]" in env_source
