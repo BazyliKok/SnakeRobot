@@ -92,9 +92,20 @@ class Train():
             'SNAKE_CHECKPOINT_RESULTS_TAGS',
             default=os.getenv('SNAKE_CHECKPOINT_RESULTS_TAG', ''),
         )
+        self.terrain_checkpoint_specs = self._parse_terrain_checkpoint_specs()
         self.legacy_results_tags = list(dict.fromkeys(
             tag
-            for tag in ([self.results_tag] + self.checkpoint_results_tags + self.terrain_sequence + ['carton'])
+            for tag in (
+                [self.results_tag]
+                + self.checkpoint_results_tags
+                + [
+                    spec['tag']
+                    for spec in self.terrain_checkpoint_specs
+                    if spec.get('tag')
+                ]
+                + self.terrain_sequence
+                + ['carton']
+            )
             if tag
         ))
         resuming_from_checkpoint = self._read_bool_env('SNAKE_RESUME_CHECKPOINT', default=False)
@@ -102,6 +113,7 @@ class Train():
             'SNAKE_RESUME_AS_NEW_DESIGN_RUN',
             default=False,
         )
+        self.start_design_counter = self._read_optional_int_env('SNAKE_START_DESIGN_COUNTER')
         self.use_legacy_policy_warm_start = self._read_bool_env(
             'SNAKE_USE_LEGACY_POLICY',
             default=False,
@@ -315,6 +327,38 @@ class Train():
             for value in str(raw_value).split(',')
             if value.strip()
         ]
+
+    def _read_optional_int_env(self, name):
+        raw_value = os.getenv(name)
+        if raw_value is None or str(raw_value).strip() == '':
+            return None
+        return int(raw_value)
+
+    def _parse_terrain_checkpoint_specs(self):
+        raw_value = os.getenv('SNAKE_TERRAIN_CHECKPOINTS', '')
+        specs = []
+        for entry in str(raw_value).replace(';', ',').split(','):
+            entry = entry.strip()
+            if not entry:
+                continue
+            parts = [part.strip() for part in entry.split(':')]
+            if len(parts) not in (2, 3):
+                raise ValueError(
+                    "SNAKE_TERRAIN_CHECKPOINTS entries must be "
+                    "terrain:checkpoint_prefix[:results_tag], separated by commas or semicolons."
+                )
+            terrain, checkpoint_prefix = parts[0], parts[1]
+            if terrain not in SnakeEnv.terrains:
+                raise ValueError(
+                    f"Unknown terrain '{terrain}' in SNAKE_TERRAIN_CHECKPOINTS. "
+                    f"Use one of {SnakeEnv.terrains}."
+                )
+            specs.append({
+                'terrain': terrain,
+                'checkpoint_prefix': checkpoint_prefix,
+                'tag': parts[2] if len(parts) == 3 else '',
+            })
+        return specs
 
     def _parse_fixed_scale_design(self):
         raw_value = os.getenv('SNAKE_FIXED_SCALE_DESIGN')
@@ -997,10 +1041,13 @@ class Train():
         episode_in_block = episode_idx % self.training_terrain_block_size
         return terrain, terrain_id, block_idx, episode_in_block
 
-    def _resolve_tagged_path(self, base_path, stem, extension):
+    def _resolve_tagged_path(self, base_path, stem, extension, tags=None):
+        tags = self.legacy_results_tags if tags is None else [
+            tag for tag in tags if tag
+        ]
         tagged_candidates = [
             os.path.join(base_path, f'{stem}_{tag}.{extension}')
-            for tag in self.legacy_results_tags
+            for tag in tags
         ]
         untagged_candidate = os.path.join(base_path, f'{stem}.{extension}')
 
@@ -1015,7 +1062,7 @@ class Train():
                 if filename.startswith(prefix) and filename.endswith(suffix):
                     return os.path.join(base_path, filename)
 
-        return tagged_candidates[0]
+        return tagged_candidates[0] if tagged_candidates else untagged_candidate
 
     def _load_trusted_checkpoint(self, path, **kwargs):
         try:
@@ -2448,7 +2495,11 @@ class Train():
             'SNAKE_RESUME_AS_NEW_DESIGN_RUN': (
                 '1' if self.resume_as_new_design_run else '0'
             ),
+            'SNAKE_START_DESIGN_COUNTER': (
+                '' if self.start_design_counter is None else str(int(self.start_design_counter))
+            ),
             'SNAKE_CHECKPOINT_RESULTS_TAGS': ','.join(self.checkpoint_results_tags),
+            'SNAKE_TERRAIN_CHECKPOINTS': os.getenv('SNAKE_TERRAIN_CHECKPOINTS', ''),
             'SNAKE_BOOTSTRAP_INDIVIDUAL_FROM_TERRAIN_POPULATION': (
                 '1' if self.bootstrap_individual_from_terrain_population else '0'
             ),
@@ -2485,7 +2536,9 @@ class Train():
             'optimized_params': optimized_params,
             'fixed_scale_design': self.fixed_scale_design,
             'resume_as_new_design_run': bool(self.resume_as_new_design_run),
+            'start_design_counter': self.start_design_counter,
             'checkpoint_results_tags': list(self.checkpoint_results_tags),
+            'terrain_checkpoint_specs': list(self.terrain_checkpoint_specs),
             'scale_design_schema_version': int(SnakeEnv.scale_design_schema_version),
             'scale_design_mode': self.design_mode,
             'scale_parameter_names': list(SnakeEnv.design_parameter_names),
@@ -2615,6 +2668,7 @@ class Train():
             networks,
             terrain=None,
             require=True,
+            tags=None,
     ):
         terrain_suffix = f'_{terrain}' if terrain is not None else ''
         stems = {
@@ -2625,7 +2679,7 @@ class Train():
             'qf2_target': f'{role_prefix}_qf2_tar_{checkpoint_prefix}{terrain_suffix}',
         }
         paths = {
-            key: self._resolve_tagged_path(base_path, stem, 'pt')
+            key: self._resolve_tagged_path(base_path, stem, 'pt', tags=tags)
             for key, stem in stems.items()
         }
         if not all(os.path.exists(path) for path in paths.values()):
@@ -2723,6 +2777,193 @@ class Train():
             self.networks['population'],
             require=True,
         )
+
+    def _validate_checkpoint_metadata(self, checkpoint_prefix, metadata):
+        if 'design_parameter_options' in metadata:
+            raise RuntimeError(
+                "This checkpoint uses the old categorical scale-placement schema. "
+                "It is incompatible with continuous scale-parameter training."
+            )
+
+        schema_version = int(metadata.get('scale_design_schema_version', -1))
+        if schema_version != int(SnakeEnv.scale_design_schema_version):
+            raise RuntimeError(
+                f"Checkpoint {checkpoint_prefix} schema version {schema_version} "
+                f"is incompatible with current schema version "
+                f"{SnakeEnv.scale_design_schema_version}."
+            )
+
+        expected_obs_dim = int(np.prod(self.env.observation_space.shape))
+        saved_obs_dim = int(metadata.get('observation_dim', -1))
+        if saved_obs_dim != expected_obs_dim:
+            raise RuntimeError(
+                f"Checkpoint {checkpoint_prefix} observation_dim={saved_obs_dim} "
+                f"does not match current observation_dim={expected_obs_dim}."
+            )
+
+        expected_action_dim = int(np.prod(self.env.action_space.shape))
+        saved_action_dim = int(metadata.get('action_dim', -1))
+        if saved_action_dim != expected_action_dim:
+            raise RuntimeError(
+                f"Checkpoint {checkpoint_prefix} action_dim={saved_action_dim} "
+                f"does not match current action_dim={expected_action_dim}."
+            )
+
+    def _load_metadata_for_prefix(self, base_path, checkpoint_prefix, tags=None):
+        metadata_path = self._resolve_tagged_path(
+            base_path,
+            f'{checkpoint_prefix}_metadata',
+            'json',
+            tags=tags,
+        )
+        if not os.path.exists(metadata_path):
+            raise FileNotFoundError(
+                f"No metadata file found for checkpoint prefix '{checkpoint_prefix}'."
+            )
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        self._validate_checkpoint_metadata(checkpoint_prefix, metadata)
+        return metadata, metadata_path
+
+    def _load_terrain_networks_from_checkpoint(
+            self,
+            base_path,
+            terrain,
+            checkpoint_prefix,
+            metadata,
+            tags=None,
+    ):
+        self.rl_alg.set_active_terrain(terrain)
+        checkpoint_mode = str(metadata.get('terrain_model_mode', 'shared')).strip().lower()
+        use_terrain_suffix = checkpoint_mode == 'separate'
+
+        for role, role_prefix in (('individual', 'ind'), ('population', 'pop')):
+            terrain_networks = self.rl_alg.get_terrain_networks(role, terrains=[terrain])[terrain]
+            loaded = False
+            if use_terrain_suffix:
+                loaded = self._load_network_group_from_checkpoint(
+                    base_path,
+                    checkpoint_prefix,
+                    role_prefix,
+                    terrain_networks,
+                    terrain=terrain,
+                    require=False,
+                    tags=tags,
+                )
+            if not loaded:
+                self._load_network_group_from_checkpoint(
+                    base_path,
+                    checkpoint_prefix,
+                    role_prefix,
+                    terrain_networks,
+                    require=True,
+                    tags=tags,
+                )
+
+        self._activate_terrain_models(terrain, self.terrain_name_to_id.get(terrain), reset_individual=False)
+        print(
+            f"loaded terrain checkpoint networks for {terrain} from {checkpoint_prefix}"
+        )
+
+    def _serialized_replay_collection_for_terrain(self, data, terrain, collection_key, single_key):
+        if collection_key in data:
+            collection = data.get(collection_key) or {}
+            if terrain in collection:
+                return collection[terrain]
+            active_terrain = data.get("active_terrain_name")
+            if active_terrain == terrain and len(collection) == 1:
+                return next(iter(collection.values()))
+            return None
+
+        if single_key in data:
+            active_terrain = data.get("active_terrain_name")
+            if active_terrain == terrain:
+                return data[single_key]
+            split = self._split_serialized_replay_buffer_by_terrain(data[single_key])
+            return split.get(terrain)
+
+        split = self._split_serialized_replay_buffer_by_terrain(data)
+        return split.get(terrain)
+
+    def _load_terrain_replay_from_checkpoint(self, base_path, terrain, checkpoint_prefix, tags=None):
+        replay_path = self._resolve_tagged_path(
+            base_path,
+            f'replay_{checkpoint_prefix.split("_ep")[0]}',
+            'pt',
+            tags=tags,
+        )
+        if not os.path.exists(replay_path):
+            print(
+                f"No replay buffer found for terrain checkpoint {checkpoint_prefix}; "
+                f"continuing with existing replay for {terrain}."
+            )
+            return False
+
+        data = self._load_trusted_checkpoint(replay_path)
+        replay_specs = [
+            ('individual', '_individual_buffers', 'individual_buffers_by_terrain', 'individual_buffer'),
+            ('population', '_population_buffers', 'population_buffers_by_terrain', 'population_buffer'),
+            ('population', '_init_state_buffers', 'init_state_buffers_by_terrain', 'init_state_buffer'),
+        ]
+        restored_any = False
+        for kind, attr_name, collection_key, single_key in replay_specs:
+            serialized = self._serialized_replay_collection_for_terrain(
+                data,
+                terrain,
+                collection_key,
+                single_key,
+            )
+            if serialized is None:
+                continue
+            buffer = self._new_replay_buffer_for_kind(kind)
+            self._restore_replay_buffer(buffer, serialized)
+            getattr(self.replay, attr_name)[terrain] = buffer
+            restored_any = True
+
+        if restored_any:
+            self._bind_replay_after_restore(terrain)
+            print(f"loaded terrain replay for {terrain} from {replay_path}")
+        else:
+            print(
+                f"Replay file {replay_path} did not contain terrain '{terrain}'; "
+                "continuing with existing replay for that terrain."
+            )
+        return restored_any
+
+    def _apply_terrain_checkpoint_specs(self, base_path):
+        if not self.terrain_checkpoint_specs:
+            return
+
+        seeded_terrains = []
+        for spec in self.terrain_checkpoint_specs:
+            terrain = spec['terrain']
+            checkpoint_prefix = spec['checkpoint_prefix']
+            tags = [spec['tag']] if spec.get('tag') else None
+            metadata, metadata_path = self._load_metadata_for_prefix(
+                base_path,
+                checkpoint_prefix,
+                tags=tags,
+            )
+            self._load_terrain_networks_from_checkpoint(
+                base_path,
+                terrain,
+                checkpoint_prefix,
+                metadata,
+                tags=tags,
+            )
+            self._load_terrain_replay_from_checkpoint(
+                base_path,
+                terrain,
+                checkpoint_prefix,
+                tags=tags,
+            )
+            print(f"terrain seed metadata: {metadata_path}")
+            seeded_terrains.append(terrain)
+
+        design_counter = int(self.design_counter)
+        for terrain in seeded_terrains:
+            self._individual_design_terrain_keys.add((design_counter, terrain))
+        self._refresh_active_terrain_filter()
 
     def load_networks(self, base_path, checkpoint_prefix):
         metadata_path = self._resolve_tagged_path(base_path, f'{checkpoint_prefix}_metadata', 'json')
@@ -2900,6 +3141,11 @@ class Train():
                 tag for tag in (
                     [self.results_tag, saved_results_tag]
                     + self.checkpoint_results_tags
+                    + [
+                        spec['tag']
+                        for spec in self.terrain_checkpoint_specs
+                        if spec.get('tag')
+                    ]
                     + self.terrain_sequence
                     + ['carton']
                 )
@@ -2927,7 +3173,11 @@ class Train():
                     "The design counter and episode counter are reset to 0, and terrain schedules "
                     "will be rebuilt for the requested run."
                 )
-                self.design_counter = 0
+                self.design_counter = (
+                    int(self.start_design_counter)
+                    if self.start_design_counter is not None
+                    else 0
+                )
                 self.episode_counter = 0
                 self.optimized_params = None
                 self.training_terrain_block_order = []
@@ -3341,6 +3591,7 @@ class Train():
             if not self.load_replay(replay_path):
                 raise RuntimeError(f"Replay buffer could not be restored from {replay_path}.")
             self._refresh_active_terrain_filter()
+            self._apply_terrain_checkpoint_specs(base_path)
             if int(self.episode_counter) < int(self.episode_iterations):
                 terrain, terrain_idx, _block_idx, _episode_in_block = self._get_training_terrain_for_episode(
                     int(self.episode_counter)
