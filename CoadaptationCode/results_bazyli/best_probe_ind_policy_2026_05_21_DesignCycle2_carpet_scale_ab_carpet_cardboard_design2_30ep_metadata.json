@@ -1,0 +1,12 @@
+{
+  "terrain": "carpet",
+  "terrain_id": 0,
+  "episode_counter": 59,
+  "episode_in_terrain_block": 29,
+  "seed": 571068821,
+  "return": 21.478206609866028,
+  "progress_cm": 45.18535482422017,
+  "steps": 175,
+  "positive_reward_fraction": 0.8,
+  "mean_action_delta": 0.6711959426743643
+}
