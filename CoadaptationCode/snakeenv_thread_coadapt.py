@@ -186,7 +186,8 @@ class SnakeEnv(gymnasium.Env):
                
         # init other things
         # moved these class declarations to static
-        SnakeEnv._ensure_hardware_initialized()
+        if not SnakeEnv._hardware_disabled():
+            SnakeEnv._ensure_hardware_initialized()
         self.motors = SnakeEnv.motors
         self.opti = SnakeEnv.opti
         #self.opti.optiTrackInit()
@@ -791,7 +792,17 @@ class SnakeEnv(gymnasium.Env):
         The following methods are static so they can be accessed from outside environment wrapper to edit parameters with threading 
     '''
     @staticmethod
+    def _hardware_disabled():
+        raw_value = os.getenv(
+            'SNAKE_DISABLE_HARDWARE',
+            os.getenv('SNAKE_PSO_ONLY', ''),
+        )
+        return str(raw_value).strip().lower() in ('1', 'true', 'yes', 'on')
+
+    @staticmethod
     def _ensure_hardware_initialized():
+        if SnakeEnv._hardware_disabled():
+            return
         if SnakeEnv.motors is None:
             SnakeEnv.motors = motorssynced.MotorsSynced()
         if SnakeEnv.opti is None:
@@ -806,6 +817,9 @@ class SnakeEnv(gymnasium.Env):
     
     @staticmethod
     def optiPos():
+        if SnakeEnv._hardware_disabled():
+            time.sleep(.05)
+            return
         SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.optiLock.acquire()
         try:
@@ -830,6 +844,9 @@ class SnakeEnv(gymnasium.Env):
     
     @staticmethod
     def motorPos():
+        if SnakeEnv._hardware_disabled():
+            time.sleep(.05)
+            return
         SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
         try:
@@ -849,6 +866,8 @@ class SnakeEnv(gymnasium.Env):
 
     @staticmethod
     def disableMotorTorque():
+        if SnakeEnv._hardware_disabled():
+            return None
         SnakeEnv._ensure_hardware_initialized()
         SnakeEnv.motorLock.acquire()
         try:

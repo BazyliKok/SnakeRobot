@@ -1,0 +1,265 @@
+{
+  "created_at": "2026_05_22_195600",
+  "feature_bounds": [
+    [
+      0.3,
+      0.95
+    ],
+    [
+      0.0,
+      45.0
+    ]
+  ],
+  "terrain_summary": {
+    "design_0_cardboard": {
+      "design_index": 0,
+      "terrain": "cardboard",
+      "count": 36,
+      "mean": -5.00055966525024,
+      "std": 6.153844242356305,
+      "min": -21.639937829325348,
+      "max": 3.961194424077361
+    },
+    "design_0_carpet": {
+      "design_index": 0,
+      "terrain": "carpet",
+      "count": 40,
+      "mean": 5.389779007420203,
+      "std": 8.607373920216146,
+      "min": -26.936339669268264,
+      "max": 13.860441199652216
+    },
+    "design_1_cardboard": {
+      "design_index": 1,
+      "terrain": "cardboard",
+      "count": 30,
+      "mean": 10.119477683937049,
+      "std": 5.326351466294087,
+      "min": -7.367839678510405,
+      "max": 19.084611081328447
+    },
+    "design_1_carpet": {
+      "design_index": 1,
+      "terrain": "carpet",
+      "count": 30,
+      "mean": 11.450809126743202,
+      "std": 2.303083531850208,
+      "min": 6.084193439852799,
+      "max": 15.901648416844532
+    },
+    "design_2_cardboard": {
+      "design_index": 2,
+      "terrain": "cardboard",
+      "count": 30,
+      "mean": 23.911273654268985,
+      "std": 8.405156474102702,
+      "min": -6.536168112090703,
+      "max": 33.43851213219289
+    },
+    "design_2_carpet": {
+      "design_index": 2,
+      "terrain": "carpet",
+      "count": 30,
+      "mean": 17.994548113724818,
+      "std": 2.938796454313434,
+      "min": 9.985595289459736,
+      "max": 24.202003866525278
+    },
+    "design_3_cardboard": {
+      "design_index": 3,
+      "terrain": "cardboard",
+      "count": 30,
+      "mean": 0.5383732555613996,
+      "std": 4.051111343282522,
+      "min": -10.845339150272487,
+      "max": 7.55418533287535
+    },
+    "design_3_carpet": {
+      "design_index": 3,
+      "terrain": "carpet",
+      "count": 30,
+      "mean": 24.884273564556786,
+      "std": 3.933489926530653,
+      "min": 17.119997104957974,
+      "max": 31.99512930304321
+    }
+  },
+  "design_summary": {
+    "0": {
+      "design_index": 0,
+      "width_ratio": 0.63,
+      "actual_width": 5.3999999999999995,
+      "attack_angle_deg": 0.0,
+      "terrain_means": {
+        "cardboard": -5.00055966525024,
+        "carpet": 5.389779007420203
+      },
+      "terrain_stds": {
+        "cardboard": 6.153844242356305,
+        "carpet": 8.607373920216146
+      },
+      "terrain_counts": {
+        "cardboard": 36,
+        "carpet": 40
+      },
+      "robustness": -2.402975082397461
+    },
+    "1": {
+      "design_index": 1,
+      "width_ratio": 0.63,
+      "actual_width": 5.3999999999999995,
+      "attack_angle_deg": 30.0,
+      "terrain_means": {
+        "cardboard": 10.119477683937049,
+        "carpet": 11.450809126743202
+      },
+      "terrain_stds": {
+        "cardboard": 5.326351466294087,
+        "carpet": 2.303083531850208
+      },
+      "terrain_counts": {
+        "cardboard": 30,
+        "carpet": 30
+      },
+      "robustness": 10.452309846878052
+    },
+    "2": {
+      "design_index": 2,
+      "width_ratio": 0.9,
+      "actual_width": 7.714285714285714,
+      "attack_angle_deg": 30.0,
+      "terrain_means": {
+        "cardboard": 23.911273654268985,
+        "carpet": 17.994548113724818
+      },
+      "terrain_stds": {
+        "cardboard": 8.405156474102702,
+        "carpet": 2.938796454313434
+      },
+      "terrain_counts": {
+        "cardboard": 30,
+        "carpet": 30
+      },
+      "robustness": 19.473730087280273
+    },
+    "3": {
+      "design_index": 3,
+      "width_ratio": 0.9,
+      "actual_width": 7.714285714285714,
+      "attack_angle_deg": 0.0,
+      "terrain_means": {
+        "cardboard": 0.5383732555613996,
+        "carpet": 24.884273564556786
+      },
+      "terrain_stds": {
+        "cardboard": 4.051111343282522,
+        "carpet": 3.933489926530653
+      },
+      "terrain_counts": {
+        "cardboard": 30,
+        "carpet": 30
+      },
+      "robustness": 6.624848365783691
+    }
+  },
+  "known_design_eval": {
+    "predictions": {
+      "0": {
+        "terrain_means": {
+          "cardboard": -5.000559665250239,
+          "carpet": 5.389779007420202
+        },
+        "terrain_stds": {
+          "cardboard": 9.289853768019101e-16,
+          "carpet": 1.1922782188768958e-15
+        },
+        "robustness": -2.402975082397461,
+        "uncertainty": 5.195169336335221
+      },
+      "1": {
+        "terrain_means": {
+          "cardboard": 10.119477683937049,
+          "carpet": 11.450809126743202
+        },
+        "terrain_stds": {
+          "cardboard": 1.5424670142815281e-15,
+          "carpet": 2.5998000376824424e-15
+        },
+        "robustness": 10.452309846878052,
+        "uncertainty": 0.6656657214030766
+      },
+      "2": {
+        "terrain_means": {
+          "cardboard": 23.911273654268992,
+          "carpet": 17.994548113724818
+        },
+        "terrain_stds": {
+          "cardboard": 6.5643535924561946e-15,
+          "carpet": 2.6963201038669062e-15
+        },
+        "robustness": 19.473730087280273,
+        "uncertainty": 2.958362770272087
+      },
+      "3": {
+        "terrain_means": {
+          "cardboard": 0.5383732555613996,
+          "carpet": 24.88427356455679
+        },
+        "terrain_stds": {
+          "cardboard": 8.498827956506644e-17,
+          "carpet": 7.268751473814639e-15
+        },
+        "robustness": 6.624848365783691,
+        "uncertainty": 12.172950154497695
+      }
+    },
+    "spearman": 1.0,
+    "rmse": 0.0,
+    "measured_best_design": 2,
+    "predicted_best_design": 2
+  },
+  "leave_one_design_out": {
+    "rows": [
+      {
+        "held_out_design": 0,
+        "measured_robustness": -2.402975082397461,
+        "predicted_robustness": 6.624848365783691,
+        "robustness_error": 9.027823448181152,
+        "episode_rmse": 16.476727175897825,
+        "predicted_uncertainty": 12.172950154497691
+      },
+      {
+        "held_out_design": 1,
+        "measured_robustness": 10.452309846878052,
+        "predicted_robustness": -2.402975082397461,
+        "robustness_error": -12.855284929275513,
+        "episode_rmse": 12.2275473674268,
+        "predicted_uncertainty": 5.195169336335221
+      },
+      {
+        "held_out_design": 2,
+        "measured_robustness": 19.473730087280273,
+        "predicted_robustness": 13.810675859451294,
+        "robustness_error": -5.6630542278289795,
+        "episode_rmse": 12.588985916846978,
+        "predicted_uncertainty": 7.38239794030987
+      },
+      {
+        "held_out_design": 3,
+        "measured_robustness": 6.624848365783691,
+        "predicted_robustness": -2.402975082397461,
+        "robustness_error": -9.027823448181152,
+        "episode_rmse": 14.876137638131569,
+        "predicted_uncertainty": 5.195169336335221
+      }
+    ],
+    "aggregate": {
+      "loo_mae": 9.1434965133667,
+      "loo_rmse": 9.491202850840992,
+      "loo_spearman": 0.316227766016838
+    }
+  },
+  "row_count": 256,
+  "training_csv_path": "C:\\Users\\koksb\\OneDrive\\Desktop\\Bachelor Project - Snake Robot\\SnakeRobot_Code\\CoadaptationCode\\results_bazyli\\design_value_models\\2026_05_22_195600_design_value_training_rows.csv",
+  "plot_path": "C:\\Users\\koksb\\OneDrive\\Desktop\\Bachelor Project - Snake Robot\\SnakeRobot_Code\\CoadaptationCode\\results_bazyli\\design_value_models\\2026_05_22_195600_design_value_landscape.png"
+}
