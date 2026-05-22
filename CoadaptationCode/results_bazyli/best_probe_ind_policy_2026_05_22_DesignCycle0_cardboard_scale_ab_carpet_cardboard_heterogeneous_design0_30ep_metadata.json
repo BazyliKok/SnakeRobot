@@ -1,0 +1,12 @@
+{
+  "terrain": "cardboard",
+  "terrain_id": 1,
+  "episode_counter": 29,
+  "episode_in_terrain_block": 29,
+  "seed": 3845873879,
+  "return": 14.560352045483313,
+  "progress_cm": 30.235256541868807,
+  "steps": 175,
+  "positive_reward_fraction": 0.7085714285714285,
+  "mean_action_delta": 0.5709876779147557
+}
