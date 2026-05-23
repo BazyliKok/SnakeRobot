@@ -14,6 +14,7 @@ if SCRIPT_DIR not in sys.path:
 
 from propose_scale_design import (
     CHECKPOINT_DESIGN_PARAMETER_BOUNDS,
+    HETEROGENEOUS_DESIGN_SOURCES,
     INITIAL_DESIGN_SOURCES,
     RESULTS_DIR,
     TERRAINS,
@@ -29,6 +30,14 @@ from propose_scale_design import (
 
 
 MODEL_DIR = os.path.join(RESULTS_DIR, "design_value_models")
+
+
+def design_sources_for_mode(design_mode):
+    if design_mode == "homogeneous":
+        return INITIAL_DESIGN_SOURCES
+    if design_mode == "heterogeneous":
+        return HETEROGENEOUS_DESIGN_SOURCES
+    raise ValueError(f"Unsupported design_mode: {design_mode}")
 
 
 def json_safe(value):
@@ -109,10 +118,15 @@ def design_fields(full_design):
     }
 
 
-def extract_rollout_rows():
+def extract_rollout_rows(design_mode):
     rows = []
-    for source in INITIAL_DESIGN_SOURCES:
-        replay = load_replay(os.path.join(RESULTS_DIR, source["replay"]))
+    for source in design_sources_for_mode(design_mode):
+        replay_path = os.path.join(RESULTS_DIR, source["replay"])
+        if not os.path.exists(replay_path):
+            raise FileNotFoundError(
+                f"Missing replay for {design_mode} design {source['index']}: {replay_path}"
+            )
+        replay = load_replay(replay_path)
         design_bounds = source.get("design_bounds", CHECKPOINT_DESIGN_PARAMETER_BOUNDS)
         full_design = coerce_design_vector(source["design"], design_bounds)
         target_key = design_key(full_design, design_bounds)
@@ -361,8 +375,104 @@ def write_csv(rows, path):
         writer.writerows(rows)
 
 
+def known_prediction_rows(design_summary, predictions):
+    rows = []
+    for design_index in sorted(design_summary):
+        measured = design_summary[design_index]
+        predicted = predictions[int(design_index)]
+        row = {
+            "design_index": int(design_index),
+            "A_width_ratio": measured["A_width_ratio"],
+            "A_attack_angle_deg": measured["A_attack_angle_deg"],
+            "B_width_ratio": measured["B_width_ratio"],
+            "B_attack_angle_deg": measured["B_attack_angle_deg"],
+            "measured_robustness": measured["robustness"],
+            "predicted_robustness": predicted["robustness"],
+            "robustness_error": predicted["robustness"] - measured["robustness"],
+            "predicted_uncertainty": predicted["uncertainty"],
+        }
+        for terrain in TERRAINS:
+            row[f"{terrain}_measured_mean"] = measured["terrain_means"][terrain]
+            row[f"{terrain}_measured_std"] = measured["terrain_stds"][terrain]
+            row[f"{terrain}_measured_count"] = measured["terrain_counts"][terrain]
+            row[f"{terrain}_predicted_mean"] = predicted["terrain_means"][terrain]
+            row[f"{terrain}_predicted_std"] = predicted["terrain_stds"][terrain]
+        rows.append(row)
+    return rows
+
+
+def print_known_prediction_table(rows):
+    print("")
+    print("=== DESIGN-VALUE KNOWN DESIGN CHECK ===")
+    print(
+        "idx | A(width,angle) | B(width,angle) | measured_robust | "
+        "predicted_robust | error | uncertainty | cardboard meas/pred | carpet meas/pred"
+    )
+    print("-" * 148)
+    for row in rows:
+        print(
+            f"{row['design_index']:>3} | "
+            f"({row['A_width_ratio']:.3f},{row['A_attack_angle_deg']:>5.1f}) | "
+            f"({row['B_width_ratio']:.3f},{row['B_attack_angle_deg']:>5.1f}) | "
+            f"{row['measured_robustness']:>15.5g} | "
+            f"{row['predicted_robustness']:>16.5g} | "
+            f"{row['robustness_error']:>7.3g} | "
+            f"{row['predicted_uncertainty']:>11.4g} | "
+            f"{row['cardboard_measured_mean']:>8.4g}/{row['cardboard_predicted_mean']:>8.4g} | "
+            f"{row['carpet_measured_mean']:>8.4g}/{row['carpet_predicted_mean']:>8.4g}"
+        )
+    print("========================================")
+
+
+def _predict_heterogeneous_slice(model, candidates, bounds, design_mode, robustness_lambda):
+    means = []
+    stds = []
+    for terrain in TERRAINS:
+        x = [encode_feature_row(dict(row, terrain=terrain), terrain, bounds, design_mode) for row in candidates]
+        mean, std = predict(model, x)
+        means.append(mean)
+        stds.append(std)
+    means = np.asarray(means, dtype=np.float64)
+    stds = np.asarray(stds, dtype=np.float64)
+    robustness = means.mean(axis=0) - float(robustness_lambda) * means.std(axis=0)
+    uncertainty = np.sqrt(np.mean(stds ** 2, axis=0) + np.std(means, axis=0) ** 2)
+    return robustness, uncertainty
+
+
+def _mark_heterogeneous_projection(axis, design_summary, reference, mode):
+    if mode == "A":
+        x_key, y_key = "A_width_ratio", "A_attack_angle_deg"
+        x_label, y_label = "A width ratio", "A attack angle (deg)"
+    else:
+        x_key, y_key = "B_width_ratio", "B_attack_angle_deg"
+        x_label, y_label = "B width ratio", "B attack angle (deg)"
+
+    for design_index, row in design_summary.items():
+        axis.scatter(
+            [row[x_key]],
+            [row[y_key]],
+            s=80,
+            marker="o",
+            facecolors="none",
+            edgecolors="black",
+            linewidths=1.2,
+        )
+        axis.text(row[x_key], row[y_key], f" {design_index}", fontsize=8)
+    axis.scatter(
+        [reference[x_key]],
+        [reference[y_key]],
+        marker="D",
+        s=70,
+        color="tab:blue",
+        label="slice anchor",
+    )
+    axis.set_xlabel(x_label)
+    axis.set_ylabel(y_label)
+    axis.grid(True, alpha=0.25)
+
+
 def save_prediction_plot(model, design_summary, bounds, design_mode, args, output_dir, timestamp):
-    if design_mode != "homogeneous" or not args.save_plot:
+    if not args.save_plot:
         return None
     try:
         import matplotlib
@@ -370,6 +480,136 @@ def save_prediction_plot(model, design_summary, bounds, design_mode, args, outpu
         import matplotlib.pyplot as plt
     except Exception:
         return None
+    if design_mode != "homogeneous":
+        prediction_rows = known_prediction_rows(
+            design_summary,
+            evaluate_known_designs(
+                model,
+                design_summary,
+                bounds,
+                design_mode,
+                args.robustness_lambda,
+            )["predictions"],
+        )
+        output_path = os.path.join(output_dir, f"{timestamp}_design_value_known_predictions.png")
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), constrained_layout=True)
+        measured = np.asarray([row["measured_robustness"] for row in prediction_rows], dtype=np.float64)
+        predicted = np.asarray([row["predicted_robustness"] for row in prediction_rows], dtype=np.float64)
+        labels = [str(row["design_index"]) for row in prediction_rows]
+        lower = float(min(measured.min(), predicted.min()))
+        upper = float(max(measured.max(), predicted.max()))
+        pad = max((upper - lower) * 0.08, 1.0)
+        axes[0].scatter(measured, predicted, s=80, facecolors="none", edgecolors="black")
+        axes[0].plot([lower - pad, upper + pad], [lower - pad, upper + pad], color="tab:red", lw=1.2)
+        for label, x, y in zip(labels, measured, predicted):
+            axes[0].text(x, y, f" {label}", fontsize=9)
+        axes[0].set_xlabel("Measured robustness")
+        axes[0].set_ylabel("Predicted robustness")
+        axes[0].set_title("Known design fit")
+        axes[0].grid(True, alpha=0.25)
+
+        x_pos = np.arange(len(prediction_rows))
+        axes[1].bar(x_pos - 0.18, measured, width=0.36, label="measured")
+        axes[1].bar(x_pos + 0.18, predicted, width=0.36, label="predicted")
+        axes[1].set_xticks(x_pos)
+        axes[1].set_xticklabels(labels)
+        axes[1].set_xlabel("Heterogeneous design index")
+        axes[1].set_ylabel("Robustness")
+        axes[1].set_title("Measured vs predicted")
+        axes[1].legend()
+        axes[1].grid(True, axis="y", alpha=0.25)
+        fig.savefig(output_path, dpi=180)
+        plt.close(fig)
+
+        reference = max(design_summary.values(), key=lambda row: row["robustness"])
+        a_width_values = np.linspace(bounds[0][0], bounds[0][1], int(args.plot_grid_size))
+        a_angle_values = np.linspace(bounds[1][0], bounds[1][1], int(args.plot_grid_size))
+        mesh_aw, mesh_aa = np.meshgrid(a_width_values, a_angle_values)
+        a_candidates = [
+            {
+                "A_width_ratio": aw,
+                "A_attack_angle_deg": aa,
+                "B_width_ratio": reference["B_width_ratio"],
+                "B_attack_angle_deg": reference["B_attack_angle_deg"],
+            }
+            for aw, aa in zip(mesh_aw.reshape(-1), mesh_aa.reshape(-1))
+        ]
+        a_robustness, a_uncertainty = _predict_heterogeneous_slice(
+            model,
+            a_candidates,
+            bounds,
+            design_mode,
+            args.robustness_lambda,
+        )
+        a_robustness = a_robustness.reshape(mesh_aw.shape)
+        a_uncertainty = a_uncertainty.reshape(mesh_aw.shape)
+
+        b_width_values = np.linspace(bounds[2][0], bounds[2][1], int(args.plot_grid_size))
+        b_angle_values = np.linspace(bounds[3][0], bounds[3][1], int(args.plot_grid_size))
+        mesh_bw, mesh_ba = np.meshgrid(b_width_values, b_angle_values)
+        b_candidates = [
+            {
+                "A_width_ratio": reference["A_width_ratio"],
+                "A_attack_angle_deg": reference["A_attack_angle_deg"],
+                "B_width_ratio": bw,
+                "B_attack_angle_deg": ba,
+            }
+            for bw, ba in zip(mesh_bw.reshape(-1), mesh_ba.reshape(-1))
+        ]
+        b_robustness, b_uncertainty = _predict_heterogeneous_slice(
+            model,
+            b_candidates,
+            bounds,
+            design_mode,
+            args.robustness_lambda,
+        )
+        b_robustness = b_robustness.reshape(mesh_bw.shape)
+        b_uncertainty = b_uncertainty.reshape(mesh_bw.shape)
+
+        landscape_path = os.path.join(output_dir, f"{timestamp}_design_value_landscape_heterogeneous.png")
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10), constrained_layout=True)
+        axes = axes.reshape(-1)
+
+        plot = axes[0].contourf(mesh_aw, mesh_aa, a_robustness, levels=24, cmap="viridis")
+        fig.colorbar(plot, ax=axes[0], label="Predicted robustness")
+        _mark_heterogeneous_projection(axes[0], design_summary, reference, "A")
+        axes[0].set_title(
+            f"Vary Scale A | B fixed=({reference['B_width_ratio']:.3f}, "
+            f"{reference['B_attack_angle_deg']:.1f})"
+        )
+
+        plot = axes[1].contourf(mesh_aw, mesh_aa, a_uncertainty, levels=24, cmap="magma")
+        fig.colorbar(plot, ax=axes[1], label="Predictive uncertainty")
+        _mark_heterogeneous_projection(axes[1], design_summary, reference, "A")
+        axes[1].set_title(
+            f"Uncertainty varying A | B fixed=({reference['B_width_ratio']:.3f}, "
+            f"{reference['B_attack_angle_deg']:.1f})"
+        )
+
+        plot = axes[2].contourf(mesh_bw, mesh_ba, b_robustness, levels=24, cmap="viridis")
+        fig.colorbar(plot, ax=axes[2], label="Predicted robustness")
+        _mark_heterogeneous_projection(axes[2], design_summary, reference, "B")
+        axes[2].set_title(
+            f"Vary Scale B | A fixed=({reference['A_width_ratio']:.3f}, "
+            f"{reference['A_attack_angle_deg']:.1f})"
+        )
+
+        plot = axes[3].contourf(mesh_bw, mesh_ba, b_uncertainty, levels=24, cmap="magma")
+        fig.colorbar(plot, ax=axes[3], label="Predictive uncertainty")
+        _mark_heterogeneous_projection(axes[3], design_summary, reference, "B")
+        axes[3].set_title(
+            f"Uncertainty varying B | A fixed=({reference['A_width_ratio']:.3f}, "
+            f"{reference['A_attack_angle_deg']:.1f})"
+        )
+
+        fig.suptitle(
+            "Heterogeneous design-value model 4D slices | "
+            f"anchor=best measured design {int(reference['design_index'])}",
+            fontsize=11,
+        )
+        fig.savefig(landscape_path, dpi=180)
+        plt.close(fig)
+        return landscape_path
 
     width_values = np.linspace(bounds[0][0], bounds[0][1], int(args.plot_grid_size))
     angle_values = np.linspace(bounds[1][0], bounds[1][1], int(args.plot_grid_size))
@@ -436,7 +676,7 @@ def main():
     os.makedirs(MODEL_DIR, exist_ok=True)
     timestamp = datetime.now().strftime("%Y_%m_%d_%H%M%S")
 
-    rollout_rows = extract_rollout_rows()
+    rollout_rows = extract_rollout_rows(args.design_mode)
     window_rows = filter_episode_window_rows(rollout_rows, args.episode_window_start, args.episode_window_end)
     balanced_rows = filter_balanced_rows(window_rows, args.max_episodes_per_design_terrain)
     training_rows = aggregate_rows(balanced_rows)
@@ -452,13 +692,16 @@ def main():
     terrain_summary, design_summary = summarize_designs(rollout_rows, args.robustness_lambda)
     selected_terrain_summary, selected_design_summary = summarize_designs(balanced_rows, args.robustness_lambda)
     known_eval = evaluate_known_designs(model, selected_design_summary, bounds, args.design_mode, args.robustness_lambda)
+    known_prediction_table = known_prediction_rows(selected_design_summary, known_eval["predictions"])
     loo_rows, loo_summary = leave_one_design_out(training_rows, balanced_rows, bounds, args.design_mode, args)
 
     training_csv_path = os.path.join(MODEL_DIR, f"{timestamp}_design_value_training_rows.csv")
     rollout_csv_path = os.path.join(MODEL_DIR, f"{timestamp}_design_value_rollout_rows.csv")
+    predictions_csv_path = os.path.join(MODEL_DIR, f"{timestamp}_design_value_known_predictions.csv")
     if args.save_csv:
         write_csv(training_rows, training_csv_path)
         write_csv(rollout_rows, rollout_csv_path)
+        write_csv(known_prediction_table, predictions_csv_path)
 
     plot_path = save_prediction_plot(model, selected_design_summary, bounds, args.design_mode, args, MODEL_DIR, timestamp)
 
@@ -487,6 +730,7 @@ def main():
         "design_summary": design_summary,
         "selected_design_summary": selected_design_summary,
         "known_design_eval": known_eval,
+        "known_prediction_table": known_prediction_table,
         "leave_one_design_out": {"rows": loo_rows, "aggregate": loo_summary},
         "row_count": len(training_rows),
         "selected_row_count": len(balanced_rows),
@@ -495,6 +739,7 @@ def main():
         "aggregate_row_count": len(training_rows),
         "training_csv_path": training_csv_path if args.save_csv else None,
         "rollout_csv_path": rollout_csv_path if args.save_csv else None,
+        "predictions_csv_path": predictions_csv_path if args.save_csv else None,
         "plot_path": plot_path,
     }
 
@@ -519,8 +764,10 @@ def main():
     if args.save_csv:
         print(f"Saved training CSV: {training_csv_path}")
         print(f"Saved rollout CSV: {rollout_csv_path}")
+        print(f"Saved prediction CSV: {predictions_csv_path}")
     if plot_path:
         print(f"Saved plot: {plot_path}")
+    print_known_prediction_table(known_prediction_table)
     print(f"Known-design Spearman: {known_eval['spearman']:.4g}, RMSE: {known_eval['rmse']:.4g}")
     print(f"LOO MAE: {loo_summary['loo_mae']:.4g}, RMSE: {loo_summary['loo_rmse']:.4g}, Spearman: {loo_summary['loo_spearman']:.4g}")
 

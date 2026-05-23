@@ -71,6 +71,42 @@ INITIAL_DESIGN_SOURCES = [
 ]
 
 
+HETEROGENEOUS_DESIGN_SOURCES = [
+    {
+        "index": 0,
+        "design": [0.63, 0.0, 0.90, 30.0],
+        "checkpoint": "2026_05_22_DesignCycle0_ep60",
+        "tag": "scale_ab_carpet_cardboard_heterogeneous_design0_30ep",
+        "replay": "replay_2026_05_22_DesignCycle0_scale_ab_carpet_cardboard_heterogeneous_design0_30ep.pt",
+        "reason": "heterogeneous A=(0.63, 0 deg), B=(0.90, 30 deg)",
+    },
+    {
+        "index": 1,
+        "design": [0.90, 30.0, 0.63, 0.0],
+        "checkpoint": "2026_05_23_DesignCycle1_ep59",
+        "tag": "scale_ab_carpet_cardboard_heterogeneous_design1_30ep",
+        "replay": "replay_2026_05_23_DesignCycle1_scale_ab_carpet_cardboard_heterogeneous_design1_30ep.pt",
+        "reason": "heterogeneous A=(0.90, 30 deg), B=(0.63, 0 deg); resumed run, filtered by design vector",
+    },
+    {
+        "index": 2,
+        "design": [0.63, 30.0, 0.90, 0.0],
+        "checkpoint": "2026_05_23_DesignCycle2_ep60",
+        "tag": "scale_ab_carpet_cardboard_heterogeneous_design2_30ep",
+        "replay": "replay_2026_05_23_DesignCycle2_scale_ab_carpet_cardboard_heterogeneous_design2_30ep.pt",
+        "reason": "heterogeneous A=(0.63, 30 deg), B=(0.90, 0 deg)",
+    },
+]
+
+
+def design_sources_for_mode(design_mode):
+    if design_mode == "homogeneous":
+        return INITIAL_DESIGN_SOURCES
+    if design_mode == "heterogeneous":
+        return HETEROGENEOUS_DESIGN_SOURCES
+    raise ValueError(f"Unsupported design mode: {design_mode}")
+
+
 def load_trusted_checkpoint(path, map_location="cpu"):
     try:
         return torch.load(path, weights_only=False, map_location=map_location)
@@ -273,7 +309,7 @@ def boundary_score(candidate, bounds, margin):
 
 def source_rows(robustness_lambda, design_mode):
     rows = []
-    for source in INITIAL_DESIGN_SOURCES:
+    for source in design_sources_for_mode(design_mode):
         replay = load_replay(os.path.join(RESULTS_DIR, source["replay"]))
         design_bounds = source.get("design_bounds", CHECKPOINT_DESIGN_PARAMETER_BOUNDS)
         full_design = coerce_design_vector(source["design"], design_bounds)
@@ -563,6 +599,128 @@ def plot_homogeneous(bundle, known_rows, pso_result, selected, args, output_dir,
     return output_path
 
 
+def _mark_projection(axis, known_rows, selected, dims, x_label, y_label):
+    best_measured = max(known_rows, key=lambda row: row["robustness"])
+    for row in known_rows:
+        x, y = row["candidate"][dims[0]], row["candidate"][dims[1]]
+        axis.scatter([x], [y], s=80, marker="o", facecolors="none", edgecolors="black", linewidths=1.2)
+        axis.text(x, y, f" {row['design_index']}", fontsize=8)
+    axis.scatter(
+        [best_measured["candidate"][dims[0]]],
+        [best_measured["candidate"][dims[1]]],
+        marker="D",
+        s=70,
+        color="tab:blue",
+        label="best measured",
+    )
+    axis.scatter(
+        [selected[dims[0]]],
+        [selected[dims[1]]],
+        marker="*",
+        s=180,
+        color="orange",
+        edgecolors="black",
+        linewidths=0.7,
+        label="selected",
+    )
+    axis.set_xlabel(x_label)
+    axis.set_ylabel(y_label)
+    axis.grid(True, alpha=0.25)
+
+
+def plot_heterogeneous(bundle, known_rows, pso_result, selected, args, output_dir, timestamp):
+    if args.no_plot or args.design_mode != "heterogeneous":
+        return None
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+
+    bounds = search_bounds(args.design_mode, args.proposal_mode)
+    known = [row["candidate"] for row in known_rows]
+    flat_particles = pso_result["particle_history"].reshape(-1, 4)
+    flat_scores = pso_result["score_history"].reshape(-1)
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), constrained_layout=True)
+    axes = axes.reshape(-1)
+
+    particle_plot = axes[0].scatter(
+        flat_particles[:, 0],
+        flat_particles[:, 1],
+        c=flat_scores,
+        s=8,
+        alpha=0.35,
+        cmap="viridis",
+    )
+    axes[0].plot(pso_result["best_path"][:, 0], pso_result["best_path"][:, 1], color="black", lw=1.0)
+    _mark_projection(axes[0], known_rows, selected, (0, 1), "A width ratio", "A attack angle (deg)")
+    axes[0].set_title("PSO particles projected to Scale A")
+    fig.colorbar(particle_plot, ax=axes[0], label="Acquisition score")
+
+    particle_plot_b = axes[1].scatter(
+        flat_particles[:, 2],
+        flat_particles[:, 3],
+        c=flat_scores,
+        s=8,
+        alpha=0.35,
+        cmap="viridis",
+    )
+    axes[1].plot(pso_result["best_path"][:, 2], pso_result["best_path"][:, 3], color="black", lw=1.0)
+    _mark_projection(axes[1], known_rows, selected, (2, 3), "B width ratio", "B attack angle (deg)")
+    axes[1].set_title("PSO particles projected to Scale B")
+    fig.colorbar(particle_plot_b, ax=axes[1], label="Acquisition score")
+
+    a_width = np.linspace(bounds[0][0], bounds[0][1], 70)
+    a_angle = np.linspace(bounds[1][0], bounds[1][1], 70)
+    mesh_aw, mesh_aa = np.meshgrid(a_width, a_angle)
+    a_slice_candidates = np.column_stack([
+        mesh_aw.reshape(-1),
+        mesh_aa.reshape(-1),
+        np.full(mesh_aw.size, selected[2]),
+        np.full(mesh_aw.size, selected[3]),
+    ])
+    a_scores = np.asarray([acquisition_score(candidate, bundle, known, args)[0] for candidate in a_slice_candidates])
+    a_scores = a_scores.reshape(mesh_aw.shape)
+    a_plot = axes[2].contourf(mesh_aw, mesh_aa, a_scores, levels=24, cmap="viridis")
+    _mark_projection(axes[2], known_rows, selected, (0, 1), "A width ratio", "A attack angle (deg)")
+    axes[2].set_title(
+        f"Acquisition slice: vary A, fix B=({selected[2]:.3f}, {selected[3]:.1f})"
+    )
+    fig.colorbar(a_plot, ax=axes[2], label="Acquisition score")
+
+    b_width = np.linspace(bounds[2][0], bounds[2][1], 70)
+    b_angle = np.linspace(bounds[3][0], bounds[3][1], 70)
+    mesh_bw, mesh_ba = np.meshgrid(b_width, b_angle)
+    b_slice_candidates = np.column_stack([
+        np.full(mesh_bw.size, selected[0]),
+        np.full(mesh_bw.size, selected[1]),
+        mesh_bw.reshape(-1),
+        mesh_ba.reshape(-1),
+    ])
+    b_scores = np.asarray([acquisition_score(candidate, bundle, known, args)[0] for candidate in b_slice_candidates])
+    b_scores = b_scores.reshape(mesh_bw.shape)
+    b_plot = axes[3].contourf(mesh_bw, mesh_ba, b_scores, levels=24, cmap="viridis")
+    _mark_projection(axes[3], known_rows, selected, (2, 3), "B width ratio", "B attack angle (deg)")
+    axes[3].set_title(
+        f"Acquisition slice: vary B, fix A=({selected[0]:.3f}, {selected[1]:.1f})"
+    )
+    fig.colorbar(b_plot, ax=axes[3], label="Acquisition score")
+
+    output_path = os.path.join(output_dir, f"{timestamp}_scale_design_pso_heterogeneous.png")
+    fig.suptitle(
+        "Heterogeneous 4D PSO visualization | "
+        f"selected A=({selected[0]:.3f}, {selected[1]:.1f}), "
+        f"B=({selected[2]:.3f}, {selected[3]:.1f}), "
+        f"score={pso_result['best_score']:.3f}",
+        fontsize=11,
+    )
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+    return output_path
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--design-mode", choices=["homogeneous", "heterogeneous"], default="homogeneous")
@@ -616,7 +774,10 @@ def main():
 
     timestamp = row["created_at"]
     csv_path = save_csv(row, output_dir) if args.save_csv else None
-    plot_path = plot_homogeneous(bundle, known_rows, pso_result, selected, args, output_dir, timestamp)
+    if args.design_mode == "heterogeneous":
+        plot_path = plot_heterogeneous(bundle, known_rows, pso_result, selected, args, output_dir, timestamp)
+    else:
+        plot_path = plot_homogeneous(bundle, known_rows, pso_result, selected, args, output_dir, timestamp)
 
     print(f"Loaded model: {bundle['path']}")
     print(f"Selected {args.design_mode} proposal: {selected}")

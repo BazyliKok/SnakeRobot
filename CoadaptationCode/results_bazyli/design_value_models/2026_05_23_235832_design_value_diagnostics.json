@@ -1,0 +1,495 @@
+{
+  "created_at": "2026_05_23_235832",
+  "model_type": "GaussianProcessRegressor",
+  "model_type_key": "gpr",
+  "training_mode": "balanced_episodes",
+  "effective_training_mode": "balanced_episodes_aggregated_conditions",
+  "design_mode": "heterogeneous",
+  "feature_schema": {
+    "design_mode": "heterogeneous",
+    "optimizer_parameter_names": [
+      "A_width_ratio",
+      "A_attack_angle_deg",
+      "B_width_ratio",
+      "B_attack_angle_deg"
+    ],
+    "full_design_parameter_names": [
+      "A_width_ratio",
+      "A_attack_angle_deg",
+      "B_width_ratio",
+      "B_attack_angle_deg"
+    ],
+    "feature_names": [
+      "A_width_norm",
+      "A_angle_norm",
+      "B_width_norm",
+      "B_angle_norm",
+      "terrain_cardboard",
+      "terrain_carpet"
+    ],
+    "feature_bounds": [
+      [
+        0.45,
+        0.9
+      ],
+      [
+        0.0,
+        30.0
+      ],
+      [
+        0.45,
+        0.9
+      ],
+      [
+        0.0,
+        30.0
+      ]
+    ]
+  },
+  "feature_bounds": [
+    [
+      0.45,
+      0.9
+    ],
+    [
+      0.0,
+      30.0
+    ],
+    [
+      0.45,
+      0.9
+    ],
+    [
+      0.0,
+      30.0
+    ]
+  ],
+  "gpr_aggregate_rollouts": true,
+  "gpr_alpha_mode": "sem",
+  "gpr_min_alpha": 1e-06,
+  "gpr_restarts": 0,
+  "gpr_target_mean": 11.76018190946865,
+  "gpr_target_std": 6.513973038810079,
+  "gpr_kernel": "1**2 * Matern(length_scale=[0.35, 0.35, 0.35, 0.35, 1, 1], nu=2.5)",
+  "gpr_fitted_kernel": "0.882**2 * Matern(length_scale=[1.83, 2.27, 1.83, 2.27, 0.12, 0.12], nu=2.5)",
+  "max_episodes_per_design_terrain": 10,
+  "episode_window_start": 20,
+  "episode_window_end": 30,
+  "terrain_summary": {
+    "design_0_cardboard": {
+      "design_index": 0,
+      "terrain": "cardboard",
+      "count": 30,
+      "mean": 1.3659009393270656,
+      "std": 10.855330072005295,
+      "min": -27.899328006708874,
+      "max": 12.605527641555923
+    },
+    "design_0_carpet": {
+      "design_index": 0,
+      "terrain": "carpet",
+      "count": 30,
+      "mean": 16.75962839683439,
+      "std": 3.3323342084560776,
+      "min": 11.675650217636823,
+      "max": 28.322980202063956
+    },
+    "design_1_cardboard": {
+      "design_index": 1,
+      "terrain": "cardboard",
+      "count": 30,
+      "mean": 6.041662383667859,
+      "std": 3.862095501809296,
+      "min": -0.9864601990425463,
+      "max": 13.90746318158394
+    },
+    "design_1_carpet": {
+      "design_index": 1,
+      "terrain": "carpet",
+      "count": 29,
+      "mean": 16.042165998648546,
+      "std": 3.5756478200902135,
+      "min": 5.585650449052818,
+      "max": 25.4726995430887
+    },
+    "design_2_cardboard": {
+      "design_index": 2,
+      "terrain": "cardboard",
+      "count": 30,
+      "mean": 6.631248444860802,
+      "std": 5.500727783601992,
+      "min": -3.6369315302105094,
+      "max": 16.05697657127663
+    },
+    "design_2_carpet": {
+      "design_index": 2,
+      "terrain": "carpet",
+      "count": 30,
+      "mean": 18.716887232494518,
+      "std": 3.5712000596812405,
+      "min": 7.9726527585591525,
+      "max": 27.66128089491399
+    }
+  },
+  "selected_terrain_summary": {
+    "design_0_cardboard": {
+      "design_index": 0,
+      "terrain": "cardboard",
+      "count": 10,
+      "mean": 7.577902558511087,
+      "std": 3.959180419361586,
+      "min": -0.6609819070518276,
+      "max": 12.605527641555923
+    },
+    "design_0_carpet": {
+      "design_index": 0,
+      "terrain": "carpet",
+      "count": 10,
+      "mean": 15.96263331766404,
+      "std": 1.1573020449222717,
+      "min": 14.416365976786546,
+      "max": 17.86511585294643
+    },
+    "design_1_cardboard": {
+      "design_index": 1,
+      "terrain": "cardboard",
+      "count": 10,
+      "mean": 7.188372846840245,
+      "std": 4.3239139304750696,
+      "min": -0.9864601990425463,
+      "max": 13.90746318158394
+    },
+    "design_1_carpet": {
+      "design_index": 1,
+      "terrain": "carpet",
+      "count": 9,
+      "mean": 17.700380543959394,
+      "std": 3.4023965486888588,
+      "min": 13.106899305676434,
+      "max": 25.4726995430887
+    },
+    "design_2_cardboard": {
+      "design_index": 2,
+      "terrain": "cardboard",
+      "count": 10,
+      "mean": 2.057916845566871,
+      "std": 3.8630390802371584,
+      "min": -3.6369315302105094,
+      "max": 8.086298736887873
+    },
+    "design_2_carpet": {
+      "design_index": 2,
+      "terrain": "carpet",
+      "count": 10,
+      "mean": 20.073885344270277,
+      "std": 3.548892750494058,
+      "min": 15.470025928854605,
+      "max": 27.66128089491399
+    }
+  },
+  "design_summary": {
+    "0": {
+      "design_index": 0,
+      "width_ratio": 0.63,
+      "actual_width": 5.3999999999999995,
+      "attack_angle_deg": 0.0,
+      "A_width_ratio": 0.63,
+      "A_attack_angle_deg": 0.0,
+      "A_actual_width": 5.3999999999999995,
+      "B_width_ratio": 0.9,
+      "B_attack_angle_deg": 30.0,
+      "B_actual_width": 7.714285714285714,
+      "terrain_means": {
+        "cardboard": 1.3659009393270656,
+        "carpet": 16.75962839683439
+      },
+      "terrain_stds": {
+        "cardboard": 10.855330072005295,
+        "carpet": 3.3323342084560776
+      },
+      "terrain_counts": {
+        "cardboard": 30,
+        "carpet": 30
+      },
+      "robustness": 5.214332803703897
+    },
+    "1": {
+      "design_index": 1,
+      "width_ratio": 0.9,
+      "actual_width": 7.714285714285714,
+      "attack_angle_deg": 30.0,
+      "A_width_ratio": 0.9,
+      "A_attack_angle_deg": 30.0,
+      "A_actual_width": 7.714285714285714,
+      "B_width_ratio": 0.63,
+      "B_attack_angle_deg": 0.0,
+      "B_actual_width": 5.3999999999999995,
+      "terrain_means": {
+        "cardboard": 6.041662383667859,
+        "carpet": 16.042165998648546
+      },
+      "terrain_stds": {
+        "cardboard": 3.862095501809296,
+        "carpet": 3.5756478200902135
+      },
+      "terrain_counts": {
+        "cardboard": 30,
+        "carpet": 29
+      },
+      "robustness": 8.54178828741303
+    },
+    "2": {
+      "design_index": 2,
+      "width_ratio": 0.63,
+      "actual_width": 5.3999999999999995,
+      "attack_angle_deg": 30.0,
+      "A_width_ratio": 0.63,
+      "A_attack_angle_deg": 30.0,
+      "A_actual_width": 5.3999999999999995,
+      "B_width_ratio": 0.9,
+      "B_attack_angle_deg": 0.0,
+      "B_actual_width": 7.714285714285714,
+      "terrain_means": {
+        "cardboard": 6.631248444860802,
+        "carpet": 18.716887232494518
+      },
+      "terrain_stds": {
+        "cardboard": 5.500727783601992,
+        "carpet": 3.5712000596812405
+      },
+      "terrain_counts": {
+        "cardboard": 30,
+        "carpet": 30
+      },
+      "robustness": 9.65265814176923
+    }
+  },
+  "selected_design_summary": {
+    "0": {
+      "design_index": 0,
+      "width_ratio": 0.63,
+      "actual_width": 5.3999999999999995,
+      "attack_angle_deg": 0.0,
+      "A_width_ratio": 0.63,
+      "A_attack_angle_deg": 0.0,
+      "A_actual_width": 5.3999999999999995,
+      "B_width_ratio": 0.9,
+      "B_attack_angle_deg": 30.0,
+      "B_actual_width": 7.714285714285714,
+      "terrain_means": {
+        "cardboard": 7.577902558511087,
+        "carpet": 15.96263331766404
+      },
+      "terrain_stds": {
+        "cardboard": 3.959180419361586,
+        "carpet": 1.1573020449222717
+      },
+      "terrain_counts": {
+        "cardboard": 10,
+        "carpet": 10
+      },
+      "robustness": 9.674085248299326
+    },
+    "1": {
+      "design_index": 1,
+      "width_ratio": 0.9,
+      "actual_width": 7.714285714285714,
+      "attack_angle_deg": 30.0,
+      "A_width_ratio": 0.9,
+      "A_attack_angle_deg": 30.0,
+      "A_actual_width": 7.714285714285714,
+      "B_width_ratio": 0.63,
+      "B_attack_angle_deg": 0.0,
+      "B_actual_width": 5.3999999999999995,
+      "terrain_means": {
+        "cardboard": 7.188372846840245,
+        "carpet": 17.700380543959394
+      },
+      "terrain_stds": {
+        "cardboard": 4.3239139304750696,
+        "carpet": 3.4023965486888588
+      },
+      "terrain_counts": {
+        "cardboard": 10,
+        "carpet": 9
+      },
+      "robustness": 9.816374771120032
+    },
+    "2": {
+      "design_index": 2,
+      "width_ratio": 0.63,
+      "actual_width": 5.3999999999999995,
+      "attack_angle_deg": 30.0,
+      "A_width_ratio": 0.63,
+      "A_attack_angle_deg": 30.0,
+      "A_actual_width": 5.3999999999999995,
+      "B_width_ratio": 0.9,
+      "B_attack_angle_deg": 0.0,
+      "B_actual_width": 7.714285714285714,
+      "terrain_means": {
+        "cardboard": 2.057916845566871,
+        "carpet": 20.073885344270277
+      },
+      "terrain_stds": {
+        "cardboard": 3.8630390802371584,
+        "carpet": 3.548892750494058
+      },
+      "terrain_counts": {
+        "cardboard": 10,
+        "carpet": 10
+      },
+      "robustness": 6.5619089702427225
+    }
+  },
+  "known_design_eval": {
+    "predictions": {
+      "0": {
+        "terrain_means": {
+          "cardboard": 7.329582988027709,
+          "carpet": 15.979742444339157
+        },
+        "terrain_stds": {
+          "cardboard": 1.2487162103282048,
+          "carpet": 0.3838399316345685
+        },
+        "robustness": 9.49212285210557,
+        "uncertainty": 4.422626740799004
+      },
+      "1": {
+        "terrain_means": {
+          "cardboard": 6.678511773542017,
+          "carpet": 17.783600951274234
+        },
+        "terrain_stds": {
+          "cardboard": 1.3135637251765797,
+          "carpet": 1.1245285804101963
+        },
+        "robustness": 9.454784067975071,
+        "uncertainty": 5.685574597652894
+      },
+      "2": {
+        "terrain_means": {
+          "cardboard": 3.020722048578353,
+          "carpet": 19.553931019082704
+        },
+        "terrain_stds": {
+          "cardboard": 1.171139835640121,
+          "carpet": 1.0861530228695169
+        },
+        "robustness": 7.154024291204441,
+        "uncertainty": 8.343404471044614
+      }
+    },
+    "spearman": 0.5,
+    "rmse": 0.4141089645439708,
+    "measured_best_design": 1,
+    "predicted_best_design": 0
+  },
+  "known_prediction_table": [
+    {
+      "design_index": 0,
+      "A_width_ratio": 0.63,
+      "A_attack_angle_deg": 0.0,
+      "B_width_ratio": 0.9,
+      "B_attack_angle_deg": 30.0,
+      "measured_robustness": 9.674085248299326,
+      "predicted_robustness": 9.49212285210557,
+      "robustness_error": -0.18196239619375554,
+      "predicted_uncertainty": 4.422626740799004,
+      "cardboard_measured_mean": 7.577902558511087,
+      "cardboard_measured_std": 3.959180419361586,
+      "cardboard_measured_count": 10,
+      "cardboard_predicted_mean": 7.329582988027709,
+      "cardboard_predicted_std": 1.2487162103282048,
+      "carpet_measured_mean": 15.96263331766404,
+      "carpet_measured_std": 1.1573020449222717,
+      "carpet_measured_count": 10,
+      "carpet_predicted_mean": 15.979742444339157,
+      "carpet_predicted_std": 0.3838399316345685
+    },
+    {
+      "design_index": 1,
+      "A_width_ratio": 0.9,
+      "A_attack_angle_deg": 30.0,
+      "B_width_ratio": 0.63,
+      "B_attack_angle_deg": 0.0,
+      "measured_robustness": 9.816374771120032,
+      "predicted_robustness": 9.454784067975071,
+      "robustness_error": -0.36159070314496056,
+      "predicted_uncertainty": 5.685574597652894,
+      "cardboard_measured_mean": 7.188372846840245,
+      "cardboard_measured_std": 4.3239139304750696,
+      "cardboard_measured_count": 10,
+      "cardboard_predicted_mean": 6.678511773542017,
+      "cardboard_predicted_std": 1.3135637251765797,
+      "carpet_measured_mean": 17.700380543959394,
+      "carpet_measured_std": 3.4023965486888588,
+      "carpet_measured_count": 9,
+      "carpet_predicted_mean": 17.783600951274234,
+      "carpet_predicted_std": 1.1245285804101963
+    },
+    {
+      "design_index": 2,
+      "A_width_ratio": 0.63,
+      "A_attack_angle_deg": 30.0,
+      "B_width_ratio": 0.9,
+      "B_attack_angle_deg": 0.0,
+      "measured_robustness": 6.5619089702427225,
+      "predicted_robustness": 7.154024291204441,
+      "robustness_error": 0.5921153209617183,
+      "predicted_uncertainty": 8.343404471044614,
+      "cardboard_measured_mean": 2.057916845566871,
+      "cardboard_measured_std": 3.8630390802371584,
+      "cardboard_measured_count": 10,
+      "cardboard_predicted_mean": 3.020722048578353,
+      "cardboard_predicted_std": 1.171139835640121,
+      "carpet_measured_mean": 20.073885344270277,
+      "carpet_measured_std": 3.548892750494058,
+      "carpet_measured_count": 10,
+      "carpet_predicted_mean": 19.553931019082704,
+      "carpet_predicted_std": 1.0861530228695169
+    }
+  ],
+  "leave_one_design_out": {
+    "rows": [
+      {
+        "held_out_design": 0,
+        "measured_robustness": 9.674085248299326,
+        "predicted_robustness": 11.73708639352714,
+        "robustness_error": 2.0630011452278136,
+        "episode_rmse": 5.07882944505293,
+        "predicted_uncertainty": 7.322522107392245
+      },
+      {
+        "held_out_design": 1,
+        "measured_robustness": 9.816374771120032,
+        "predicted_robustness": 11.125476604590215,
+        "robustness_error": 1.3091018334701836,
+        "episode_rmse": 6.1563282805275055,
+        "predicted_uncertainty": 6.8848144172903885
+      },
+      {
+        "held_out_design": 2,
+        "measured_robustness": 6.5619089702427225,
+        "predicted_robustness": 9.909642668655962,
+        "robustness_error": 3.34773369841324,
+        "episode_rmse": 5.925271416251683,
+        "predicted_uncertainty": 4.664367006765162
+      }
+    ],
+    "aggregate": {
+      "loo_mae": 2.239945559037079,
+      "loo_rmse": 2.3928394744248833,
+      "loo_spearman": 0.5
+    }
+  },
+  "row_count": 6,
+  "selected_row_count": 59,
+  "episode_window_row_count": 59,
+  "rollout_row_count": 179,
+  "aggregate_row_count": 6,
+  "training_csv_path": "C:\\Users\\koksb\\OneDrive\\Desktop\\Bachelor Project - Snake Robot\\SnakeRobot_Code\\CoadaptationCode\\results_bazyli\\design_value_models\\2026_05_23_235832_design_value_training_rows.csv",
+  "rollout_csv_path": "C:\\Users\\koksb\\OneDrive\\Desktop\\Bachelor Project - Snake Robot\\SnakeRobot_Code\\CoadaptationCode\\results_bazyli\\design_value_models\\2026_05_23_235832_design_value_rollout_rows.csv",
+  "predictions_csv_path": "C:\\Users\\koksb\\OneDrive\\Desktop\\Bachelor Project - Snake Robot\\SnakeRobot_Code\\CoadaptationCode\\results_bazyli\\design_value_models\\2026_05_23_235832_design_value_known_predictions.csv",
+  "plot_path": "C:\\Users\\koksb\\OneDrive\\Desktop\\Bachelor Project - Snake Robot\\SnakeRobot_Code\\CoadaptationCode\\results_bazyli\\design_value_models\\2026_05_23_235832_design_value_landscape_heterogeneous.png"
+}
