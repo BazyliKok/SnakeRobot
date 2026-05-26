@@ -83,16 +83,16 @@
     0.63,
     0.0
   ],
-  "terrain": "carpet",
+  "terrain": "cardboard",
   "terrain_order": [
     "carpet",
     "cardboard"
   ],
-  "episode": 30,
+  "episode": 60,
   "episode_in_terrain": 30,
   "episodes_per_terrain": 30,
   "terrain_completed": true,
-  "next_episode": 31,
+  "next_episode": 61,
   "target_z_cm": -85.0,
   "dmax_cm": 40.0,
   "episode_length": 175,
@@ -119,16 +119,17 @@
     -1.0,
     0.0,
     0.0,
-    1.0,
-    0.0
+    0.0,
+    1.0
   ],
   "population_replay": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/CoadaptationCode/results_goal_research/2026_05_26_154206_homogeneous_init_0_warmup2/replay/population_replay_latest.npz",
   "individual_replay": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/CoadaptationCode/results_goal_research/2026_05_26_154206_homogeneous_init_0_warmup2/replay/individual_replay_latest.npz",
   "resume_manifest": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/CoadaptationCode/results_goal_research/2026_05_26_154206_homogeneous_init_0_warmup2/resume_state.json",
-  "latest_completed_episode": 30,
-  "latest_checkpoint": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/CoadaptationCode/results_goal_research/2026_05_26_154206_homogeneous_init_0_warmup2/checkpoints/episode_030_carpet.pt",
-  "updated_at": "2026-05-26T16:37:52",
+  "latest_completed_episode": 60,
+  "latest_checkpoint": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/CoadaptationCode/results_goal_research/2026_05_26_154206_homogeneous_init_0_warmup2/checkpoints/episode_060_cardboard.pt",
+  "updated_at": "2026-05-26T18:46:58",
   "completed_terrain_policies": [
+    "cardboard",
     "carpet"
   ]
 }
