@@ -1002,7 +1002,12 @@ class GoalSnakeEnv(gym.Env):
         else:
             if prompt and self.motors is not None:
                 with self._motor_io_lock:
-                    self.motors.disableTorque()
+                    torque_disabled = self.motors.disableTorque()
+                if not torque_disabled:
+                    raise RuntimeError(
+                        "Failed to disable DYNAMIXEL torque before manual reset; "
+                        "refusing to continue while motors may still be active."
+                    )
                 try:
                     input("Reset robot by hand to the shared start pose, then press Enter.")
                 except EOFError:
@@ -1196,35 +1201,34 @@ class GoalResearchRunner:
         )
         population_replay_size = int(getattr(args, "population_replay_size", getattr(args, "replay_size", DEFAULT_REPLAY_SIZE)))
         individual_replay_size = int(getattr(args, "individual_replay_size", getattr(args, "replay_size", DEFAULT_REPLAY_SIZE)))
-        self.population_agent = GoalSACAgent(
-            obs_dim=CONDITIONED_OBSERVATION_DIM,
-            action_dim=ACTION_DIM,
-            hidden_sizes=HIDDEN_SIZES,
-            lr=args.learning_rate,
-            gamma=args.gamma,
-            tau=args.tau,
-            alpha_init=args.alpha_init,
-            target_entropy=args.target_entropy,
-            grad_clip_value=args.grad_clip_value,
+        self.terrain_order = self._terrain_order()
+        if not self.terrain_order:
+            raise ValueError("--terrain-order must include at least one terrain.")
+        self.population_agent = self._make_sac_agent()
+        self.individual_agents = {
+            terrain: self._make_sac_agent()
+            for terrain in self.terrain_order
+        }
+        self.copy_population_to_individual = bool(
+            getattr(args, "copy_population_to_individual", False)
         )
-        self.individual_agent = GoalSACAgent(
-            obs_dim=CONDITIONED_OBSERVATION_DIM,
-            action_dim=ACTION_DIM,
-            hidden_sizes=HIDDEN_SIZES,
-            lr=args.learning_rate,
-            gamma=args.gamma,
-            tau=args.tau,
-            alpha_init=args.alpha_init,
-            target_entropy=args.target_entropy,
-            grad_clip_value=args.grad_clip_value,
-        )
-        self.individual_agent.copy_from(self.population_agent, reset_optimizers=True)
+        if not self.copy_population_to_individual:
+            print(
+                "Population-to-individual policy copy is disabled; each terrain "
+                "uses its own freshly initialized individual SAC."
+            )
         self.population_replay = GoalReplayBuffer(population_replay_size)
-        self.individual_replay = GoalReplayBuffer(individual_replay_size)
+        self.individual_replays = {
+            terrain: GoalReplayBuffer(individual_replay_size)
+            for terrain in self.terrain_order
+        }
+        self.design_id = int(getattr(args, "design_id", 0))
+        self.active_terrain = self.terrain_order[0]
+        self.active_condition = build_condition_vector(self.morphology, self.active_terrain)
+        self.individual_agent = self.individual_agents[self.active_terrain]
+        self.individual_replay = self.individual_replays[self.active_terrain]
         self.agent = self.individual_agent
         self.replay = self.individual_replay
-        self.design_id = int(getattr(args, "design_id", 0))
-        self.active_condition = build_condition_vector(self.morphology, self._terrain_order()[0])
         self.trained_individual_payloads: Dict[str, Dict[str, object]] = {}
         self.stop_event = threading.Event()
         self.background_threads: List[threading.Thread] = []
@@ -1247,6 +1251,19 @@ class GoalResearchRunner:
         timestamp = datetime.now().strftime("%Y_%m_%d_%H%M%S")
         config_id = args.config_id or f"{args.layout}_A{args.a_width:.3f}_{args.a_angle:.1f}"
         return f"{timestamp}_{config_id}"
+
+    def _make_sac_agent(self) -> GoalSACAgent:
+        return GoalSACAgent(
+            obs_dim=CONDITIONED_OBSERVATION_DIM,
+            action_dim=ACTION_DIM,
+            hidden_sizes=HIDDEN_SIZES,
+            lr=self.args.learning_rate,
+            gamma=self.args.gamma,
+            tau=self.args.tau,
+            alpha_init=self.args.alpha_init,
+            target_entropy=self.args.target_entropy,
+            grad_clip_value=self.args.grad_clip_value,
+        )
 
     @property
     def individual_updates_per_episode(self) -> int:
@@ -1297,14 +1314,28 @@ class GoalResearchRunner:
             "sac": {
                 "population": self.population_agent.hyperparameters(),
                 "individual": self.individual_agent.hyperparameters(),
-                "copy_direction": "population_to_individual_at_each_design_terrain_block",
+                "individual_by_terrain": {
+                    terrain: agent.hyperparameters()
+                    for terrain, agent in self.individual_agents.items()
+                },
+                "individual_topology": "fresh_sac_per_terrain",
+                "copy_direction": (
+                    "population_to_individual_at_each_design_terrain_block"
+                    if self.copy_population_to_individual
+                    else "none_population_never_copied_into_individual"
+                ),
+                "copy_population_to_individual": bool(self.copy_population_to_individual),
                 "individual_to_population_transfer": "replay_data_only",
             },
             "replay": {
                 "population_replay_size": self.population_replay.capacity,
                 "individual_replay_size": self.individual_replay.capacity,
+                "individual_replay_size_by_terrain": {
+                    terrain: replay.capacity
+                    for terrain, replay in self.individual_replays.items()
+                },
             },
-            "terrain_order": self._terrain_order(),
+            "terrain_order": self.terrain_order,
             "dry_run": bool(self.args.dry_run or self.args.hardware_disabled),
             "resume": {
                 "enabled": True,
@@ -1324,7 +1355,7 @@ class GoalResearchRunner:
         try:
             completed_before_run = int(self.completed_training_episodes)
             episode_index = 0
-            for terrain in self._terrain_order():
+            for terrain in self.terrain_order:
                 block_start_episode = episode_index + 1
                 block_end_episode = episode_index + int(self.args.episodes_per_terrain)
                 if completed_before_run >= block_end_episode:
@@ -1334,9 +1365,7 @@ class GoalResearchRunner:
                 if completed_before_run < block_start_episode:
                     self.start_design_terrain_block(terrain)
                 else:
-                    self.active_condition = self.condition_for(terrain)
-                    self.agent = self.individual_agent
-                    self.replay = self.individual_replay
+                    self._set_active_terrain(terrain)
 
                 for episode_in_terrain in range(1, int(self.args.episodes_per_terrain) + 1):
                     episode_index += 1
@@ -1357,7 +1386,7 @@ class GoalResearchRunner:
                     terrain_completed = episode_in_terrain == int(self.args.episodes_per_terrain)
                     if terrain_completed:
                         self.trained_individual_payloads[terrain] = self.individual_agent.state_dict()
-                    replay_paths = self._save_replay_snapshots()
+                    replay_paths = self._save_replay_snapshots(active_terrain=terrain)
                     checkpoint_path = self._save_checkpoint(
                         episode_index,
                         terrain,
@@ -1365,6 +1394,7 @@ class GoalResearchRunner:
                         terrain_completed=terrain_completed,
                         population_replay_path=replay_paths[0],
                         individual_replay_path=replay_paths[1],
+                        individual_replay_paths=replay_paths[2],
                     )
                     self._save_resume_state(
                         checkpoint_path=checkpoint_path,
@@ -1374,11 +1404,12 @@ class GoalResearchRunner:
                         terrain_completed=terrain_completed,
                         population_replay_path=replay_paths[0],
                         individual_replay_path=replay_paths[1],
+                        individual_replay_paths=replay_paths[2],
                     )
                     self.completed_training_episodes = episode_index
                     print(
                         f"Episode {episode_index} {terrain} done: return={summary['episode_return']:.4f}, "
-                        f"individual_replay={len(self.individual_replay)}, "
+                        f"individual_replay={len(self.individual_replays[terrain])}, "
                         f"population_replay={len(self.population_replay)}, updates={len(loss_rows)}"
                     )
                 self.trained_individual_payloads[terrain] = self.individual_agent.state_dict()
@@ -1412,12 +1443,25 @@ class GoalResearchRunner:
     def condition_for(self, terrain: str, morphology: Optional[MorphologyConfig] = None) -> np.ndarray:
         return build_condition_vector(morphology or self.morphology, terrain)
 
-    def start_design_terrain_block(self, terrain: str) -> None:
+    def _set_active_terrain(self, terrain: str) -> None:
+        if terrain not in self.individual_agents:
+            raise KeyError(f"No individual SAC agent configured for terrain '{terrain}'.")
+        self.active_terrain = terrain
         self.active_condition = self.condition_for(terrain)
-        self.individual_agent.copy_from(self.population_agent, reset_optimizers=True)
-        self.individual_replay.clear()
+        self.individual_agent = self.individual_agents[terrain]
+        self.individual_replay = self.individual_replays[terrain]
         self.agent = self.individual_agent
         self.replay = self.individual_replay
+
+    def start_design_terrain_block(self, terrain: str) -> None:
+        self._set_active_terrain(terrain)
+        if self.copy_population_to_individual:
+            self.individual_agent.copy_from(self.population_agent, reset_optimizers=True)
+        else:
+            print(
+                f"Starting terrain block '{terrain}' with its fresh individual SAC; "
+                "population is not copied."
+            )
 
     def _checkpoint_run_data(
         self,
@@ -1427,6 +1471,7 @@ class GoalResearchRunner:
         terrain_completed: bool,
         population_replay_path: Optional[Path] = None,
         individual_replay_path: Optional[Path] = None,
+        individual_replay_paths: Optional[Dict[str, Path]] = None,
     ) -> Dict[str, object]:
         return {
             "run_id": self.output_dir.name,
@@ -1437,7 +1482,7 @@ class GoalResearchRunner:
             "morphology": self.morphology.metadata(),
             "design_vector": self.morphology.as_design_vector(),
             "terrain": terrain,
-            "terrain_order": self._terrain_order(),
+            "terrain_order": self.terrain_order,
             "episode": int(episode_index),
             "episode_in_terrain": int(episode_in_terrain),
             "episodes_per_terrain": int(self.args.episodes_per_terrain),
@@ -1448,6 +1493,7 @@ class GoalResearchRunner:
             "episode_length": int(self.args.episode_length),
             "batch_size": int(self.args.batch_size),
             "profile_velocity": int(self.args.profile_velocity),
+            "copy_population_to_individual": bool(self.copy_population_to_individual),
             "yaw_penalty_axis": "y",
             "success_bonus": float(getattr(self.args, "success_bonus", 0.0)),
             "time_penalty": float(getattr(self.args, "time_penalty", 0.0)),
@@ -1456,16 +1502,27 @@ class GoalResearchRunner:
             "condition": self.condition_for(terrain).tolist(),
             "population_replay": str(population_replay_path) if population_replay_path else "",
             "individual_replay": str(individual_replay_path) if individual_replay_path else "",
+            "individual_replays": {
+                replay_terrain: str(path)
+                for replay_terrain, path in (individual_replay_paths or {}).items()
+            },
             "resume_manifest": str(self.resume_json),
         }
 
-    def _save_replay_snapshots(self) -> Tuple[Path, Path]:
+    def _save_replay_snapshots(self, active_terrain: str) -> Tuple[Path, Path, Dict[str, Path]]:
         replay_dir = self.output_dir / "replay"
         population_path = replay_dir / "population_replay_latest.npz"
-        individual_path = replay_dir / "individual_replay_latest.npz"
         self.population_replay.save_npz(population_path)
-        self.individual_replay.save_npz(individual_path)
-        return population_path, individual_path
+        individual_paths: Dict[str, Path] = {}
+        for terrain, replay in self.individual_replays.items():
+            path = replay_dir / f"individual_replay_{terrain}_latest.npz"
+            replay.save_npz(path)
+            individual_paths[terrain] = path
+        individual_path = individual_paths[active_terrain]
+        # Compatibility alias for older analysis scripts: points to the
+        # currently active terrain replay at the time of the checkpoint.
+        self.individual_replays[active_terrain].save_npz(replay_dir / "individual_replay_latest.npz")
+        return population_path, individual_path, individual_paths
 
     def _save_resume_state(
         self,
@@ -1476,6 +1533,7 @@ class GoalResearchRunner:
         terrain_completed: bool,
         population_replay_path: Path,
         individual_replay_path: Path,
+        individual_replay_paths: Dict[str, Path],
     ) -> None:
         payload = self._checkpoint_run_data(
             episode_index=episode_index,
@@ -1484,6 +1542,7 @@ class GoalResearchRunner:
             terrain_completed=terrain_completed,
             population_replay_path=population_replay_path,
             individual_replay_path=individual_replay_path,
+            individual_replay_paths=individual_replay_paths,
         )
         payload.update(
             {
@@ -1502,16 +1561,28 @@ class GoalResearchRunner:
         checkpoints = sorted(checkpoint_dir.glob("episode_*_*.pt"))
         return checkpoints[-1] if checkpoints else None
 
+    def _resolve_resume_file(self, raw_path: object, fallback_path: Optional[Path]) -> Optional[Path]:
+        raw_text = str(raw_path or "").strip()
+        candidate = Path(raw_text) if raw_text else None
+        if candidate is not None and candidate.exists():
+            return candidate
+        if fallback_path is not None and fallback_path.exists():
+            return fallback_path
+        if candidate is not None and candidate.is_absolute() and fallback_path is not None:
+            relocated = fallback_path.parent / candidate.name
+            if relocated.exists():
+                return relocated
+        return candidate or fallback_path
+
     def _load_resume_state(self) -> None:
         if self.resume_json.exists():
             self.resume_state = json.loads(self.resume_json.read_text(encoding="utf-8"))
-            checkpoint_path = Path(str(self.resume_state.get("latest_checkpoint", "")))
-            population_replay_path = Path(str(self.resume_state.get("population_replay", "")))
-            individual_replay_path = Path(str(self.resume_state.get("individual_replay", "")))
+            checkpoint_path = self._resolve_resume_file(
+                self.resume_state.get("latest_checkpoint", ""),
+                self._latest_checkpoint_from_dir(),
+            )
         else:
             checkpoint_path = self._latest_checkpoint_from_dir()
-            population_replay_path = self.output_dir / "replay" / "population_replay_latest.npz"
-            individual_replay_path = self.output_dir / "replay" / "individual_replay_latest.npz"
             self.resume_state = {}
 
         if checkpoint_path is None or not checkpoint_path.exists():
@@ -1519,6 +1590,9 @@ class GoalResearchRunner:
             return
 
         checkpoint = load_torch_payload(checkpoint_path)
+        run_data = checkpoint.get("run_data", {})
+        if not isinstance(run_data, dict):
+            run_data = {}
         checkpoint_morphology = checkpoint.get("morphology", {})
         checkpoint_layout = str(checkpoint.get("layout", checkpoint_morphology.get("layout", "")))
         checkpoint_design_vector = checkpoint.get("design_vector", checkpoint_morphology.get("design_vector", []))
@@ -1533,24 +1607,63 @@ class GoalResearchRunner:
         ):
             raise ValueError("Resume checkpoint design vector does not match requested morphology.")
         self.population_agent.load_state_dict_payload(checkpoint["population_agent"], load_optimizers=True)
-        self.individual_agent.load_state_dict_payload(checkpoint["individual_agent"], load_optimizers=True)
-        self.trained_individual_payloads = checkpoint.get("trained_individual_payloads", {})
+        active_terrain = str(checkpoint.get("terrain", self.resume_state.get("terrain", self.terrain_order[0])))
+
+        individual_payloads = checkpoint.get("individual_agents", {})
+        if isinstance(individual_payloads, dict) and individual_payloads:
+            for terrain, payload in individual_payloads.items():
+                if terrain in self.individual_agents and isinstance(payload, dict):
+                    self.individual_agents[terrain].load_state_dict_payload(payload, load_optimizers=True)
+        else:
+            trained_payloads = checkpoint.get("trained_individual_payloads", {})
+            if isinstance(trained_payloads, dict):
+                for terrain, payload in trained_payloads.items():
+                    if terrain in self.individual_agents and isinstance(payload, dict):
+                        self.individual_agents[terrain].load_state_dict_payload(payload, load_optimizers=True)
+            if "individual_agent" in checkpoint and active_terrain in self.individual_agents:
+                self.individual_agents[active_terrain].load_state_dict_payload(
+                    checkpoint["individual_agent"],
+                    load_optimizers=True,
+                )
+        self.trained_individual_payloads = {
+            terrain: agent.state_dict()
+            for terrain, agent in self.individual_agents.items()
+        }
         self.completed_training_episodes = int(checkpoint.get("episode", self.resume_state.get("latest_completed_episode", 0)))
+
+        population_replay_path = self._resolve_resume_file(
+            self.resume_state.get("population_replay", run_data.get("population_replay", "")),
+            self.output_dir / "replay" / "population_replay_latest.npz",
+        )
         if population_replay_path.exists():
             self.population_replay.load_npz(population_replay_path)
         else:
             print(f"Resume warning: population replay snapshot missing at {population_replay_path}.")
-        if individual_replay_path.exists():
-            self.individual_replay.load_npz(individual_replay_path)
-        else:
-            print(f"Resume warning: individual replay snapshot missing at {individual_replay_path}.")
-        terrain = str(checkpoint.get("terrain", self.resume_state.get("terrain", self._terrain_order()[0])))
-        self.active_condition = self.condition_for(terrain)
-        self.agent = self.individual_agent
-        self.replay = self.individual_replay
+
+        raw_individual_replays = self.resume_state.get(
+            "individual_replays",
+            run_data.get("individual_replays", {}),
+        )
+        if not isinstance(raw_individual_replays, dict):
+            raw_individual_replays = {}
+        legacy_individual_replay_path = self._resolve_resume_file(
+            self.resume_state.get("individual_replay", run_data.get("individual_replay", "")),
+            self.output_dir / "replay" / "individual_replay_latest.npz",
+        )
+        for terrain in self.terrain_order:
+            fallback = self.output_dir / "replay" / f"individual_replay_{terrain}_latest.npz"
+            replay_path = self._resolve_resume_file(raw_individual_replays.get(terrain, ""), fallback)
+            if (replay_path is None or not replay_path.exists()) and terrain == active_terrain:
+                replay_path = legacy_individual_replay_path
+            if replay_path is not None and replay_path.exists():
+                self.individual_replays[terrain].load_npz(replay_path)
+            else:
+                print(f"Resume warning: individual replay snapshot missing for {terrain}: {replay_path}.")
+
+        self._set_active_terrain(active_terrain)
         print(
             f"Resumed {self.output_dir.name} from completed episode {self.completed_training_episodes} "
-            f"({terrain})."
+            f"({active_terrain})."
         )
 
     def collect_episode(
@@ -1565,7 +1678,9 @@ class GoalResearchRunner:
         policy_agent: Optional[GoalSACAgent] = None,
         policy_role: str = "individual",
     ) -> Dict[str, object]:
-        active_policy = policy_agent or self.individual_agent
+        terrain_agent = self.individual_agents[terrain]
+        terrain_replay = self.individual_replays[terrain]
+        active_policy = policy_agent or terrain_agent
         self.env.current_terrain = terrain
         robot_observation, reset_info = self.env.reset(
             options={"interactive_reset": bool(self.args.interactive_reset and not self.args.dry_run)}
@@ -1584,7 +1699,7 @@ class GoalResearchRunner:
             done = bool(terminated or truncated)
             terminal_for_replay = bool(terminated)
             if add_to_replay:
-                self.individual_replay.add_sample(
+                terrain_replay.add_sample(
                     robot_observation,
                     action,
                     reward,
@@ -1653,9 +1768,9 @@ class GoalResearchRunner:
             "forward_progress_cm": float(final_info.get("forward_curr_cm", 0.0)),
             "final_z_cm": float(final_info.get("position_z_cm", np.nan)),
             "target_z_cm": float(self.args.target_z),
-            "individual_alpha": self.individual_agent.alpha,
+            "individual_alpha": terrain_agent.alpha,
             "population_alpha": self.population_agent.alpha,
-            "individual_replay_size": len(self.individual_replay),
+            "individual_replay_size": len(terrain_replay),
             "population_replay_size": len(self.population_replay),
             "layout": self.morphology.layout,
             "A_width_ratio": self.morphology.a_width,
@@ -1675,12 +1790,13 @@ class GoalResearchRunner:
     ) -> None:
         if phase != "train":
             return
+        terrain_agent = self.individual_agents.get(terrain, self.individual_agent)
         print(
             f"{terrain} ep={episode_index:03d} step={step_idx:03d} "
             f"reward={float(reward):+.4f} "
             f"forward={float(info.get('forward_reward', np.nan)):+.4f} "
             f"yaw_penalty_rad={float(info.get('yaw_penalty_rad', np.nan)):.4f} "
-            f"alpha={self.individual_agent.alpha:.5f}"
+            f"alpha={terrain_agent.alpha:.5f}"
         )
 
     def _step_row(
@@ -1697,6 +1813,7 @@ class GoalResearchRunner:
         reward: float,
         info: Dict[str, object],
     ) -> Dict[str, object]:
+        terrain_agent = self.individual_agents.get(terrain, self.individual_agent)
         row: Dict[str, object] = {
             "phase": phase,
             "terrain": terrain,
@@ -1705,7 +1822,7 @@ class GoalResearchRunner:
             "episode_in_terrain": episode_in_terrain,
             "step": step_idx,
             "reward": float(reward),
-            "individual_alpha": self.individual_agent.alpha,
+            "individual_alpha": terrain_agent.alpha,
             "population_alpha": self.population_agent.alpha,
             "layout": self.morphology.layout,
             "A_width_ratio": self.morphology.a_width,
@@ -1735,16 +1852,18 @@ class GoalResearchRunner:
                 f"on {terrain}."
             )
             return rows
-        if len(self.individual_replay) > 0:
+        individual_agent = self.individual_agents[terrain]
+        individual_replay = self.individual_replays[terrain]
+        if len(individual_replay) > 0:
             individual_update_count = self._scheduled_update_count(
-                replay=self.individual_replay,
+                replay=individual_replay,
                 configured_max=self.individual_updates_per_episode,
             )
             rows.extend(
                 self._run_agent_updates(
                     role="individual",
-                    agent=self.individual_agent,
-                    replay=self.individual_replay,
+                    agent=individual_agent,
+                    replay=individual_replay,
                     update_count=individual_update_count,
                     episode_index=episode_index,
                     terrain=terrain,
@@ -1807,6 +1926,7 @@ class GoalResearchRunner:
         terrain_completed: bool,
         population_replay_path: Path,
         individual_replay_path: Path,
+        individual_replay_paths: Dict[str, Path],
     ) -> Path:
         checkpoint_dir = self.output_dir / "checkpoints"
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -1818,6 +1938,7 @@ class GoalResearchRunner:
             terrain_completed=terrain_completed,
             population_replay_path=population_replay_path,
             individual_replay_path=individual_replay_path,
+            individual_replay_paths=individual_replay_paths,
         )
         torch.save(
             {
@@ -1830,6 +1951,10 @@ class GoalResearchRunner:
                 "layout": self.morphology.layout,
                 "design_vector": self.morphology.as_design_vector(),
                 "individual_agent": self.individual_agent.state_dict(),
+                "individual_agents": {
+                    agent_terrain: agent.state_dict()
+                    for agent_terrain, agent in self.individual_agents.items()
+                },
                 "population_agent": self.population_agent.state_dict(),
                 "trained_individual_payloads": self.trained_individual_payloads,
                 "morphology": self.morphology.metadata(),
@@ -1857,10 +1982,22 @@ class GoalResearchRunner:
             "robust_score": individual_eval["robust_score"],
             "eval_policy": "individual_per_terrain",
             "individual_alpha": self.individual_agent.alpha,
+            "individual_alpha_by_terrain": {
+                terrain: agent.alpha
+                for terrain, agent in self.individual_agents.items()
+            },
             "population_alpha": self.population_agent.alpha,
             "individual_total_updates": self.individual_agent.total_updates,
+            "individual_total_updates_by_terrain": {
+                terrain: int(agent.total_updates)
+                for terrain, agent in self.individual_agents.items()
+            },
             "population_total_updates": self.population_agent.total_updates,
             "individual_replay_size": len(self.individual_replay),
+            "individual_replay_size_by_terrain": {
+                terrain: len(replay)
+                for terrain, replay in self.individual_replays.items()
+            },
             "population_replay_size": len(self.population_replay),
         }
         if bool(getattr(self.args, "eval_population_policy", True)):
@@ -1884,16 +2021,12 @@ class GoalResearchRunner:
         terrain_progress: Dict[str, List[float]] = {}
         terrain_success: Dict[str, List[float]] = {}
         episode_index = 0
-        for terrain in self._terrain_order():
+        for terrain in self.terrain_order:
             active_policy = policy_agent
-            if use_terrain_individual_payloads and terrain in self.trained_individual_payloads:
-                self.individual_agent.load_state_dict_payload(
-                    self.trained_individual_payloads[terrain],
-                    load_optimizers=False,
-                )
-                active_policy = self.individual_agent
+            if use_terrain_individual_payloads:
+                active_policy = self.individual_agents[terrain]
             if active_policy is None:
-                active_policy = self.individual_agent
+                active_policy = self.individual_agents[terrain]
             self.active_condition = self.condition_for(terrain)
             terrain_returns[terrain] = []
             terrain_progress[terrain] = []
@@ -2273,6 +2406,17 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--seed", type=int, default=12345)
     train.add_argument("--design-id", type=int, default=0)
     train.add_argument("--use-population-pso", action="store_true")
+    train.add_argument(
+        "--copy-population-to-individual",
+        dest="copy_population_to_individual",
+        action="store_true",
+        default=False,
+    )
+    train.add_argument(
+        "--no-copy-population-to-individual",
+        dest="copy_population_to_individual",
+        action="store_false",
+    )
     train.add_argument("--output-dir", default=str(Path("CoadaptationCode") / "results_goal_research"))
     train.add_argument("--resume-run-dir", type=Path)
     train.add_argument("--individual-checkpoint", type=Path)
@@ -2356,8 +2500,10 @@ def train_main(args: argparse.Namespace) -> Dict[str, object]:
         checkpoint = load_torch_payload(args.individual_checkpoint)
         payload = checkpoint["individual_agent"]
         runner.population_agent.load_state_dict_payload(payload, load_optimizers=False)
-        runner.individual_agent.load_state_dict_payload(payload, load_optimizers=False)
-        print(f"Warm-started population and individual SAC from {args.individual_checkpoint}.")
+        for agent in runner.individual_agents.values():
+            agent.load_state_dict_payload(payload, load_optimizers=False)
+        runner._set_active_terrain(runner.active_terrain)
+        print(f"Warm-started population and all terrain individual SACs from {args.individual_checkpoint}.")
     summary = runner.run()
     print(json.dumps(summary, indent=2))
     return summary
@@ -2373,9 +2519,12 @@ def evaluate_design_main(args: argparse.Namespace) -> Dict[str, object]:
         checkpoint_terrain = str(checkpoint.get("terrain", ""))
         if checkpoint_terrain:
             runner.trained_individual_payloads[checkpoint_terrain] = payload
+            if checkpoint_terrain in runner.individual_agents:
+                runner.individual_agents[checkpoint_terrain].load_state_dict_payload(payload, load_optimizers=False)
         else:
             for terrain in runner._terrain_order():
                 runner.trained_individual_payloads[terrain] = payload
+                runner.individual_agents[terrain].load_state_dict_payload(payload, load_optimizers=False)
     summary = runner.evaluate()
     runner.summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))

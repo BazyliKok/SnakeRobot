@@ -77,6 +77,8 @@ class MotorsSynced:
         self.RESET_POSITION_THRESHOLD       = int(os.getenv("SNAKE_DXL_RESET_THRESHOLD", "50"))
         self.REBOOT_STATUS_RETRIES          = int(os.getenv("SNAKE_DXL_REBOOT_STATUS_RETRIES", "8"))
         self.REBOOT_STATUS_INTERVAL_SECONDS = float(os.getenv("SNAKE_DXL_REBOOT_STATUS_INTERVAL_S", "0.25"))
+        self.TORQUE_DISABLE_RETRIES         = int(os.getenv("SNAKE_DXL_TORQUE_DISABLE_RETRIES", "3"))
+        self.TORQUE_DISABLE_RETRY_SECONDS   = float(os.getenv("SNAKE_DXL_TORQUE_DISABLE_RETRY_S", "0.10"))
         self.last_good_motor_pos            = [0.0] * len(self.DXL_ID)
         self._recovery_in_progress          = False
         self._drive_mode_supported          = True
@@ -532,12 +534,43 @@ class MotorsSynced:
 
     
     def disableTorque(self): 
-        # disable torques to lock motors    
-        success = True
+        # Disable torque before manual handling. Treat missed status packets as
+        # failures so callers can avoid prompting for a reset while torque may
+        # still be active.
+        failed_motors = []
+        attempts = max(1, int(self.TORQUE_DISABLE_RETRIES))
         for motorID in self.DXL_ID:
-            dxlCommRes, dxlError = self.packetHandler.write1ByteTxRx(self.portHandler, motorID, self.ADDR_MX_TORQUE_ENABLE, 0)
-            success = self._log_motor_result(motorID, "disable torque", dxlCommRes, dxlError) and success
-        return success
+            motor_disabled = False
+            for attempt in range(1, attempts + 1):
+                dxlCommRes, dxlError = self.packetHandler.write1ByteTxRx(
+                    self.portHandler,
+                    motorID,
+                    self.ADDR_MX_TORQUE_ENABLE,
+                    0,
+                )
+                action = (
+                    "disable torque"
+                    if attempts == 1
+                    else f"disable torque attempt {attempt}/{attempts}"
+                )
+                if self._log_motor_result(
+                    motorID,
+                    action,
+                    dxlCommRes,
+                    dxlError,
+                    include_hardware_status=(attempt == attempts),
+                ):
+                    motor_disabled = True
+                    break
+                time.sleep(max(0.0, float(self.TORQUE_DISABLE_RETRY_SECONDS)))
+            if not motor_disabled:
+                failed_motors.append(motorID)
+
+        if failed_motors:
+            print(f"Failed to confirm torque disable for motor IDs: {failed_motors}")
+            self.reportHardwareErrorStatuses(failed_motors, context="after failed torque disable")
+            return False
+        return True
 
     def _read_positions_raw(self, recover_on_failure=True):
         self.groupSyncRead.clearParam()
