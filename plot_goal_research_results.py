@@ -229,16 +229,6 @@ def plot_learning_curve(summary: pd.DataFrame, output_dir: Path) -> Path | None:
     if "forward_progress_cm" in summary.columns:
         axes[1].plot(x, summary["forward_progress_cm"], color="#4E79A7", marker="o", lw=1.7)
         axes[1].set_ylabel("Forward progress (cm)")
-    if "remaining_distance_cm" in summary.columns:
-        axes[1].plot(
-            x,
-            summary["remaining_distance_cm"],
-            color="#E15759",
-            marker="o",
-            lw=1.3,
-            label="Remaining/error",
-        )
-        axes[1].legend(frameon=False)
     finish(axes[1])
 
     fig.tight_layout()

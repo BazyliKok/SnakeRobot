@@ -88,7 +88,7 @@ class MotorsSynced:
         self.LEN_PRES_VELOC                 = 4
         self.LEN_PRES_LOAD                  = 2
 
-        self.DEVICENAME                     = os.getenv("SNAKE_DXL_DEVICE", '/dev/ttyUSB0') # this changes with every device, in linux: '/dev/ttyUSB0'
+        self.DEVICENAME                     = os.getenv("SNAKE_DXL_DEVICE", '/dev/ttyUSB1') # this changes with every device, in linux: '/dev/ttyUSB0'
         self.AUTO_DETECT_DEVICE             = os.getenv("SNAKE_DXL_AUTO_DETECT_DEVICE", "1").strip().lower() in ("1", "true", "yes", "on")
         self.portHandler                    = PortHandler(self.DEVICENAME)
         self.packetHandler                  = PacketHandler(self.PROTOCOL_VERSION)

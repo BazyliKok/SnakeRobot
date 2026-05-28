@@ -1,0 +1,223 @@
+{
+  "created_at": "2026-05-28T14:26:43",
+  "last_opened_at": "2026-05-28T14:26:43",
+  "goal_pipeline": {
+    "episodes_per_terrain": 30,
+    "updates_per_episode": 100,
+    "individual_updates_per_episode": 100,
+    "population_updates_per_episode": 100,
+    "warmup_episodes_per_terrain": 3,
+    "update_schedule": "replay-ramp",
+    "update_ramp_min": 5,
+    "update_ramp_replay_divisor": 20,
+    "episode_length": 175,
+    "batch_size": 32,
+    "target_z_cm": -85.0,
+    "dmax_cm": 40.0,
+    "profile_velocity": 120,
+    "cooldown_seconds": 0,
+    "rigid_body_id": 99,
+    "observation_labels": [
+      "Target_Delta_X_Norm",
+      "Target_Delta_Y_Norm",
+      "Target_Forward_Remaining_Norm",
+      "Theta_X_Norm",
+      "Theta_Y_Norm",
+      "Theta_Z_Norm",
+      "Motor1_Norm",
+      "Motor2_Norm",
+      "Motor3_Norm",
+      "Motor4_Norm",
+      "Motor5_Norm",
+      "Motor6_Norm",
+      "Motor7_Norm"
+    ],
+    "condition_labels": [
+      "A_Width_Norm",
+      "A_Angle_Norm",
+      "B_Width_Norm",
+      "B_Angle_Norm",
+      "Delta_Width_Norm",
+      "Delta_Angle_Norm",
+      "Terrain_Carpet",
+      "Terrain_Cardboard"
+    ],
+    "conditioned_observation_dim": 21,
+    "position_observation_mode": "target_relative",
+    "yaw_penalty_axis": "y",
+    "success_bonus": 50.0,
+    "time_penalty": 0.001,
+    "action_limit_deg": 55.0
+  },
+  "morphology": {
+    "layout": "homogeneous",
+    "a_width": 0.9,
+    "a_angle": 0.0,
+    "b_width": 0.9,
+    "b_angle": 0.0,
+    "design_vector": [
+      0.9,
+      0.0,
+      0.9,
+      0.0
+    ],
+    "module_pattern": [
+      "A",
+      "B",
+      "A",
+      "B",
+      "A",
+      "B",
+      "A",
+      "B"
+    ],
+    "expanded_modules": [
+      {
+        "module": 1,
+        "group": "A",
+        "width_ratio": 0.9,
+        "attack_angle_deg": 0.0
+      },
+      {
+        "module": 2,
+        "group": "B",
+        "width_ratio": 0.9,
+        "attack_angle_deg": 0.0
+      },
+      {
+        "module": 3,
+        "group": "A",
+        "width_ratio": 0.9,
+        "attack_angle_deg": 0.0
+      },
+      {
+        "module": 4,
+        "group": "B",
+        "width_ratio": 0.9,
+        "attack_angle_deg": 0.0
+      },
+      {
+        "module": 5,
+        "group": "A",
+        "width_ratio": 0.9,
+        "attack_angle_deg": 0.0
+      },
+      {
+        "module": 6,
+        "group": "B",
+        "width_ratio": 0.9,
+        "attack_angle_deg": 0.0
+      },
+      {
+        "module": 7,
+        "group": "A",
+        "width_ratio": 0.9,
+        "attack_angle_deg": 0.0
+      },
+      {
+        "module": 8,
+        "group": "B",
+        "width_ratio": 0.9,
+        "attack_angle_deg": 0.0
+      }
+    ]
+  },
+  "sac": {
+    "population": {
+      "obs_dim": 21,
+      "action_dim": 7,
+      "hidden_sizes": [
+        256,
+        256,
+        256
+      ],
+      "lr": 0.001,
+      "gamma": 0.99,
+      "tau": 0.01,
+      "alpha_init": 0.01,
+      "alpha": 0.009999999776482582,
+      "target_entropy_internal": -9.0,
+      "target_entropy_paper": 9.0,
+      "grad_clip_value": 1.0,
+      "optimizer": "Adam"
+    },
+    "individual": {
+      "obs_dim": 21,
+      "action_dim": 7,
+      "hidden_sizes": [
+        256,
+        256,
+        256
+      ],
+      "lr": 0.001,
+      "gamma": 0.99,
+      "tau": 0.01,
+      "alpha_init": 0.01,
+      "alpha": 0.009999999776482582,
+      "target_entropy_internal": -9.0,
+      "target_entropy_paper": 9.0,
+      "grad_clip_value": 1.0,
+      "optimizer": "Adam"
+    },
+    "individual_by_terrain": {
+      "carpet": {
+        "obs_dim": 21,
+        "action_dim": 7,
+        "hidden_sizes": [
+          256,
+          256,
+          256
+        ],
+        "lr": 0.001,
+        "gamma": 0.99,
+        "tau": 0.01,
+        "alpha_init": 0.01,
+        "alpha": 0.009999999776482582,
+        "target_entropy_internal": -9.0,
+        "target_entropy_paper": 9.0,
+        "grad_clip_value": 1.0,
+        "optimizer": "Adam"
+      },
+      "cardboard": {
+        "obs_dim": 21,
+        "action_dim": 7,
+        "hidden_sizes": [
+          256,
+          256,
+          256
+        ],
+        "lr": 0.001,
+        "gamma": 0.99,
+        "tau": 0.01,
+        "alpha_init": 0.01,
+        "alpha": 0.009999999776482582,
+        "target_entropy_internal": -9.0,
+        "target_entropy_paper": 9.0,
+        "grad_clip_value": 1.0,
+        "optimizer": "Adam"
+      }
+    },
+    "individual_topology": "fresh_sac_per_terrain",
+    "copy_direction": "none_population_never_copied_into_individual",
+    "copy_population_to_individual": false,
+    "individual_to_population_transfer": "replay_data_only"
+  },
+  "replay": {
+    "population_replay_size": 100000,
+    "individual_replay_size": 100000,
+    "individual_replay_size_by_terrain": {
+      "carpet": 100000,
+      "cardboard": 100000
+    }
+  },
+  "terrain_order": [
+    "carpet",
+    "cardboard"
+  ],
+  "dry_run": false,
+  "resume": {
+    "enabled": true,
+    "resume_manifest": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_goal_research/2026_05_28_142641_homogeneous_init_2_warmup2_final_lowent/resume_state.json",
+    "resume_requested": false
+  }
+}
