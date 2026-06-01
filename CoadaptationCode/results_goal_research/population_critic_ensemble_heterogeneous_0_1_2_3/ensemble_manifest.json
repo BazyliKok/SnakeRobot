@@ -1,0 +1,50 @@
+{
+  "run_dirs": [
+    "CoadaptationCode/results_goal_research/2026_05_29_185753_heterogeneous_init_0_warmup2_final_lowent2_move",
+    "CoadaptationCode/results_goal_research/2026_05_30_165210_heterogeneous_init_1_warmup2_final_lowent2_move",
+    "CoadaptationCode/results_goal_research/2026_05_30_185201_heterogeneous_init_2_warmup2_final_lowent2_move",
+    "CoadaptationCode/results_goal_research/2026_06_01_131550_heterogeneous_init_3_warmup2_final_lowent2_move"
+  ],
+  "seed_run_dirs": [
+    "CoadaptationCode/results_goal_research/2026_05_29_185753_heterogeneous_init_0_warmup2_final_lowent2_move",
+    "CoadaptationCode/results_goal_research/2026_05_30_165210_heterogeneous_init_1_warmup2_final_lowent2_move",
+    "CoadaptationCode/results_goal_research/2026_05_30_185201_heterogeneous_init_2_warmup2_final_lowent2_move",
+    "CoadaptationCode/results_goal_research/2026_06_01_131550_heterogeneous_init_3_warmup2_final_lowent2_move"
+  ],
+  "updates": 5000,
+  "batch_size": 256,
+  "members": [
+    {
+      "index": 0,
+      "seed_run_dir": "CoadaptationCode/results_goal_research/2026_05_29_185753_heterogeneous_init_0_warmup2_final_lowent2_move",
+      "output_dir": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_00_2026_05_29_185753_heterogeneous_init_0_warmup2_final_lowent2_move",
+      "checkpoint": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_00_2026_05_29_185753_heterogeneous_init_0_warmup2_final_lowent2_move/checkpoints/combined_population_critic.pt",
+      "replay": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_00_2026_05_29_185753_heterogeneous_init_0_warmup2_final_lowent2_move/replay/population_replay_latest.npz",
+      "summary": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_00_2026_05_29_185753_heterogeneous_init_0_warmup2_final_lowent2_move/combined_population_critic_summary.json"
+    },
+    {
+      "index": 1,
+      "seed_run_dir": "CoadaptationCode/results_goal_research/2026_05_30_165210_heterogeneous_init_1_warmup2_final_lowent2_move",
+      "output_dir": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_01_2026_05_30_165210_heterogeneous_init_1_warmup2_final_lowent2_move",
+      "checkpoint": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_01_2026_05_30_165210_heterogeneous_init_1_warmup2_final_lowent2_move/checkpoints/combined_population_critic.pt",
+      "replay": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_01_2026_05_30_165210_heterogeneous_init_1_warmup2_final_lowent2_move/replay/population_replay_latest.npz",
+      "summary": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_01_2026_05_30_165210_heterogeneous_init_1_warmup2_final_lowent2_move/combined_population_critic_summary.json"
+    },
+    {
+      "index": 2,
+      "seed_run_dir": "CoadaptationCode/results_goal_research/2026_05_30_185201_heterogeneous_init_2_warmup2_final_lowent2_move",
+      "output_dir": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_02_2026_05_30_185201_heterogeneous_init_2_warmup2_final_lowent2_move",
+      "checkpoint": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_02_2026_05_30_185201_heterogeneous_init_2_warmup2_final_lowent2_move/checkpoints/combined_population_critic.pt",
+      "replay": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_02_2026_05_30_185201_heterogeneous_init_2_warmup2_final_lowent2_move/replay/population_replay_latest.npz",
+      "summary": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_02_2026_05_30_185201_heterogeneous_init_2_warmup2_final_lowent2_move/combined_population_critic_summary.json"
+    },
+    {
+      "index": 3,
+      "seed_run_dir": "CoadaptationCode/results_goal_research/2026_06_01_131550_heterogeneous_init_3_warmup2_final_lowent2_move",
+      "output_dir": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_03_2026_06_01_131550_heterogeneous_init_3_warmup2_final_lowent2_move",
+      "checkpoint": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_03_2026_06_01_131550_heterogeneous_init_3_warmup2_final_lowent2_move/checkpoints/combined_population_critic.pt",
+      "replay": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_03_2026_06_01_131550_heterogeneous_init_3_warmup2_final_lowent2_move/replay/population_replay_latest.npz",
+      "summary": "CoadaptationCode/results_goal_research/population_critic_ensemble_heterogeneous_0_1_2_3/member_03_2026_06_01_131550_heterogeneous_init_3_warmup2_final_lowent2_move/combined_population_critic_summary.json"
+    }
+  ]
+}

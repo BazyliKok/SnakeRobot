@@ -1,0 +1,70 @@
+{
+  "created_at": "2026_06_01_191319",
+  "seed_checkpoint": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_goal_research/2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent/checkpoints/episode_060_cardboard.pt",
+  "replay_sources": [
+    {
+      "path": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_goal_research/2026_05_29_133815_homogeneous_init_0_warmup2_final_lowent/replay/population_replay_latest.npz",
+      "size": 10500,
+      "design_id_counts": {
+        "0": 10500
+      }
+    },
+    {
+      "path": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_goal_research/2026_05_28_183142_homogeneous_init_1_warmup2_nocopy_lowent/replay/population_replay_latest.npz",
+      "size": 10497,
+      "design_id_counts": {
+        "1": 10497
+      }
+    },
+    {
+      "path": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_goal_research/2026_05_27_163648_homogeneous_init_2_warmup2_nocopy_lowent/replay/population_replay_latest.npz",
+      "size": 10468,
+      "design_id_counts": {
+        "2": 10468
+      }
+    },
+    {
+      "path": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_goal_research/2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent/replay/population_replay_latest.npz",
+      "size": 10500,
+      "design_id_counts": {
+        "3": 10500
+      }
+    }
+  ],
+  "merged_replay": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_03_2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent/replay/population_replay_latest.npz",
+  "merged_replay_size": 41965,
+  "design_id_counts": {
+    "0": 10500,
+    "1": 10497,
+    "2": 10468,
+    "3": 10500
+  },
+  "terrain_id_counts": {
+    "0": 20968,
+    "1": 20997
+  },
+  "updates": 5000,
+  "batch_size": 256,
+  "learning_rate": 0.001,
+  "gamma": 0.99,
+  "tau": 0.01,
+  "load_optimizers": false,
+  "losses_csv": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_03_2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent/offline_population_losses.csv",
+  "checkpoint": "/home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_03_2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent/checkpoints/combined_population_critic.pt",
+  "final_diagnostics": {
+    "update": 5000,
+    "replay_size": 41965,
+    "qf1_loss": 0.39875978231430054,
+    "qf2_loss": 0.42180415987968445,
+    "policy_loss": -50.87400436401367,
+    "alpha": 0.009620455093681812,
+    "alpha_loss": 2.137820243835449,
+    "target_entropy_internal": -9.0,
+    "target_entropy_paper": 9.0,
+    "q_target_mean": 50.25666809082031,
+    "q_target_std": 9.279152870178223,
+    "policy_mean_abs": 1.5347310304641724,
+    "policy_log_std_mean": -0.7470754981040955,
+    "train_update": 10122
+  }
+}

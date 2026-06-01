@@ -9,4 +9,5 @@ python3 CoadaptationCode/goal_research_training.py train \
   --update-ramp-min 5 \
   --update-ramp-replay-divisor 20 \
   --alpha-init 0.01 \
-  --no-copy-population-to-individual
+  --no-copy-population-to-individual\
+  --target-entropy -9

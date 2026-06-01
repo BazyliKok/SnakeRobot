@@ -1,0 +1,50 @@
+{
+  "run_dirs": [
+    "CoadaptationCode/results_goal_research/2026_05_29_133815_homogeneous_init_0_warmup2_final_lowent",
+    "CoadaptationCode/results_goal_research/2026_05_28_183142_homogeneous_init_1_warmup2_nocopy_lowent",
+    "CoadaptationCode/results_goal_research/2026_05_27_163648_homogeneous_init_2_warmup2_nocopy_lowent",
+    "CoadaptationCode/results_goal_research/2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent"
+  ],
+  "seed_run_dirs": [
+    "CoadaptationCode/results_goal_research/2026_05_29_133815_homogeneous_init_0_warmup2_final_lowent",
+    "CoadaptationCode/results_goal_research/2026_05_28_183142_homogeneous_init_1_warmup2_nocopy_lowent",
+    "CoadaptationCode/results_goal_research/2026_05_27_163648_homogeneous_init_2_warmup2_nocopy_lowent",
+    "CoadaptationCode/results_goal_research/2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent"
+  ],
+  "updates": 5000,
+  "batch_size": 256,
+  "members": [
+    {
+      "index": 0,
+      "seed_run_dir": "CoadaptationCode/results_goal_research/2026_05_29_133815_homogeneous_init_0_warmup2_final_lowent",
+      "output_dir": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_00_2026_05_29_133815_homogeneous_init_0_warmup2_final_lowent",
+      "checkpoint": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_00_2026_05_29_133815_homogeneous_init_0_warmup2_final_lowent/checkpoints/combined_population_critic.pt",
+      "replay": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_00_2026_05_29_133815_homogeneous_init_0_warmup2_final_lowent/replay/population_replay_latest.npz",
+      "summary": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_00_2026_05_29_133815_homogeneous_init_0_warmup2_final_lowent/combined_population_critic_summary.json"
+    },
+    {
+      "index": 1,
+      "seed_run_dir": "CoadaptationCode/results_goal_research/2026_05_28_183142_homogeneous_init_1_warmup2_nocopy_lowent",
+      "output_dir": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_01_2026_05_28_183142_homogeneous_init_1_warmup2_nocopy_lowent",
+      "checkpoint": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_01_2026_05_28_183142_homogeneous_init_1_warmup2_nocopy_lowent/checkpoints/combined_population_critic.pt",
+      "replay": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_01_2026_05_28_183142_homogeneous_init_1_warmup2_nocopy_lowent/replay/population_replay_latest.npz",
+      "summary": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_01_2026_05_28_183142_homogeneous_init_1_warmup2_nocopy_lowent/combined_population_critic_summary.json"
+    },
+    {
+      "index": 2,
+      "seed_run_dir": "CoadaptationCode/results_goal_research/2026_05_27_163648_homogeneous_init_2_warmup2_nocopy_lowent",
+      "output_dir": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_02_2026_05_27_163648_homogeneous_init_2_warmup2_nocopy_lowent",
+      "checkpoint": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_02_2026_05_27_163648_homogeneous_init_2_warmup2_nocopy_lowent/checkpoints/combined_population_critic.pt",
+      "replay": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_02_2026_05_27_163648_homogeneous_init_2_warmup2_nocopy_lowent/replay/population_replay_latest.npz",
+      "summary": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_02_2026_05_27_163648_homogeneous_init_2_warmup2_nocopy_lowent/combined_population_critic_summary.json"
+    },
+    {
+      "index": 3,
+      "seed_run_dir": "CoadaptationCode/results_goal_research/2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent",
+      "output_dir": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_03_2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent",
+      "checkpoint": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_03_2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent/checkpoints/combined_population_critic.pt",
+      "replay": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_03_2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent/replay/population_replay_latest.npz",
+      "summary": "CoadaptationCode/results_goal_research/population_critic_ensemble_homogeneous_0_1_2_3/member_03_2026_05_29_133815_homogeneous_init_3_warmup2_final_lowent/combined_population_critic_summary.json"
+    }
+  ]
+}
