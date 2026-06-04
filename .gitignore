@@ -3,3 +3,8 @@ rlkit/
 /home/bazyli/Desktop/Snake Robot Project/Repo/SnakeRobot/results_bazyli
 CoadaptationCode/__pycache__/
 __pycache__/
+*.pt
+*.npz
+CoadaptationCode/previous_experiments_results_bazyli/
+CoadaptationCode/**/replay/
+CoadaptationCode/**/checkpoints/

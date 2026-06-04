@@ -1,1 +1,0 @@
-Episode,Run_ID,rows,first_timestep,last_timestep,terrain,terrain_block,final_cumulative_reward,sum_reward,sum_progress_cm,sum_raw_progress_cm,run_start_episode,resume_checkpoint
